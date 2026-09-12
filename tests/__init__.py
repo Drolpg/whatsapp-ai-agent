@@ -1,12 +1,10 @@
-"""Suite de testes, espelhando as camadas da aplicacao.
+"""Suite de testes, espelhando a estrutura do projeto.
 
-A divisao nao e so organizacional — ela torna visivel o custo de cada
-camada. Quanto mais pra dentro, mais barato e mais rapido o teste:
+A divisao em duas pastas torna visivel o custo de cada tipo de teste:
 
-    tests/domain/          regra pura: sem I/O, sem mock, sem framework
-    tests/application/     casos de uso com dubles in-memory das portas
-    tests/infrastructure/  adapters contra as tecnologias reais
+    tests/core/      logica de decisao: sem I/O, sem mock, sem framework
+    tests/adapters/  integracao com as tecnologias reais
 
-Se um teste em `tests/domain/` um dia precisar de rede ou de arquivo, o
+Se um teste em `tests/core/` um dia precisar de rede ou de arquivo, o
 problema esta no codigo de producao, nao no teste.
 """

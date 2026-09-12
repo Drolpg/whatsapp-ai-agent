@@ -1,6 +1,6 @@
-"""Adapters da porta `GatewayHandoff` — a transferencia pro humano.
+"""Implementacoes de `GatewayHandoff` — a transferencia pro humano.
 
-O dominio so sabe que uma `Conversa` "escalou". O que isso significa em
+O nucleo so sabe que uma `Conversa` "escalou". O que isso significa em
 termos operacionais — disparar um Studio Flow, criar uma Task no TaskRouter,
 fazer ela aparecer pro atendente no Flex — e conhecimento exclusivo deste
 subpacote.

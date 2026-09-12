@@ -3,11 +3,12 @@
 Agente de IA para atendimento via WhatsApp (Twilio Agent Connect), com RAG
 local e handoff para atendimento humano no Twilio Flex.
 
-O plano completo, o modelo de domínio e as fases de implementação estão no
-[SPEC.md](SPEC.md); as convenções de trabalho, no [CLAUDE.md](CLAUDE.md).
+O plano completo, a decisão de arquitetura e os critérios de aceite de cada
+fase estão no [SPEC.md](SPEC.md); as convenções de trabalho, no
+[CLAUDE.md](CLAUDE.md).
 
 > **Status:** Fase 0 (esqueleto). Ainda não há lógica de negócio nem testes —
-> os módulos existem só com o docstring do seu papel na arquitetura.
+> os módulos de `core/` e `adapters/` existem só com o docstring do seu papel.
 
 ## Requisitos
 

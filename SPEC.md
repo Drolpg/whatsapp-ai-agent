@@ -8,27 +8,42 @@ sobre uma base de conhecimento própria, e handoff para atendimento humano no
 Twilio Flex quando a IA não resolve. Objetivo duplo: (1) demonstrar pro
 cliente que a solução funciona hoje, sem custo de API, e que trocar o modelo
 local por uma API paga (OpenAI, Anthropic, Bedrock) no futuro é uma troca
-pequena, não um projeto novo; (2) servir de estudo guiado de Domain-Driven
-Design (DDD) — cada fase existe tanto pra avançar o código quanto pra ensinar
-um conceito específico de DDD.
+pequena, não um projeto novo; (2) servir de estudo guiado — cada fase existe
+tanto pra avançar o código quanto pra ensinar um conceito específico.
 
-## Por que DDD neste projeto
+## Metodologia: Spec-Driven Development (SDD)
 
-O requisito de negócio central ("hoje é Llama local, amanhã pode ser
-qualquer API") é, na prática, um pedido de baixo acoplamento entre a regra de
-negócio (o que decide se a IA responde ou escala) e a tecnologia que gera a
-resposta (Ollama, OpenAI, Anthropic...). DDD, com a prática de **Ports &
-Adapters** (arquitetura hexagonal), é o padrão desenhado exatamente pra esse
-problema: o domínio define o que precisa (uma "porta"), e cada tecnologia
-concreta é um "adaptador" plugável atrás dessa porta. A Fase 7 deste plano
-existe só pra provar isso na prática, trocando o LLM sem tocar em nenhuma
-linha de domínio.
+Este projeto segue **Spec-Driven Development**: este `SPEC.md` é a fonte
+única de verdade, escrita e revisada *antes* de qualquer código, e cada fase
+só é considerada pronta quando o resultado bate com os critérios de aceite
+descritos aqui. Isso é diferente de escolher uma arquitetura (como DDD) —
+SDD é sobre *como conduzimos o processo* (spec → implementação → validação
+contra a spec), não sobre *como o código é modelado por dentro*. Já
+praticávamos isso informalmente nos outros projetos do usuário
+(`twilio_project`); aqui só estamos dando nome à prática e reforçando com
+critérios de aceite explícitos por fase.
 
-## Linguagem ubíqua (Ubiquitous Language)
+Papéis, sem mudança: a sessão de revisão (esta conversa) mantém o SPEC.md,
+explica os conceitos e avalia cada fase entregue; a sessão de implementação
+(VSCode/Claude Code local) implementa exatamente o escopo da fase corrente a
+partir de um prompt autocontido, e para no checkpoint pra validação.
 
-Termos do domínio, em português — é a linguagem que usaremos em nomes de
-classes, métodos e commits, não só em conversa. Um dos pilares de DDD é que o
-código fale a língua do negócio, não a língua do framework.
+## Decisão de arquitetura: sem DDD
+
+Cogitamos originalmente Domain-Driven Design completo (Entities, Value
+Objects, Aggregates, linguagem ubíqua formal). Decidimos não seguir por
+esse caminho: o domínio deste projeto é fino — há, na prática, uma única
+decisão relevante ("a IA resolveu ou precisa escalar?") — e modelar isso com
+o ferramental completo de DDD ensinaria o ritual sem o motivo real de ele
+existir (não há invariante complexa nem evento de domínio que justifique).
+
+Mantemos só a parte de DDD que resolve um problema real deste projeto:
+**separar a lógica de decisão da tecnologia que a executa**, via interfaces
+simples (um padrão às vezes chamado de Ports & Adapters). É o que permite a
+Fase 7 — trocar o LLM local por uma API paga — ser uma troca pequena e
+isolada, sem tocar na lógica de negócio.
+
+## Termos usados no projeto
 
 | Termo | Significado |
 |---|---|
@@ -38,67 +53,39 @@ código fale a língua do negócio, não a língua do framework.
 | Escalar / Handoff | Transferir a Conversa pra um atendente humano. |
 | Base de Conhecimento | O conjunto de documentos/textos que a IA consulta pra responder (RAG). |
 | Trecho | Um pedaço da Base de Conhecimento recuperado como relevante pra uma pergunta. |
-| Resposta | O texto que a IA (ou o atendente) devolve ao cliente. |
 
-## Bounded Context
+## Núcleo de decisão (`core/`)
 
-Um único bounded context nesta POC: **Atendimento Assistido por IA**. Não há
-necessidade de dividir em múltiplos contextos agora — o escopo é pequeno o
-bastante pra caber em um.
+Python puro — não importa `twilio`, `langchain`, `requests` nem nada que
+fale com o mundo externo. Se um teste desta pasta precisar de rede ou de um
+arquivo, é sinal de que algo vazou de infraestrutura pra cá.
 
-## Modelo de domínio (camada `domain/`)
+- **`Conversa`**: id, lista de `Mensagem`, e um status (`ATIVA`, `ESCALADA`,
+  `ENCERRADA`). É o único jeito de mudar o estado de uma conversa.
+- **`Mensagem`**: autor (`CLIENTE` ou `IA`), conteúdo, timestamp. Simples,
+  imutável.
+- **`TriagemService`**: recebe a `Conversa` e uma resposta candidata da IA, e
+  decide se ela é suficiente ou se precisa escalar (ex: a IA pediu escalar
+  explicitamente, ou passou de um número de tentativas sem sucesso). Não
+  gera a resposta — só decide o que fazer com ela.
+- **`processar_mensagem_recebida`**: a função que orquestra tudo — busca
+  trechos relevantes, pede resposta ao LLM, passa pro `TriagemService`, e ou
+  responde pelo canal ou aciona o handoff. Fica aqui mesmo (não precisa de
+  uma camada `application/` separada pra um fluxo deste tamanho).
 
-Esta camada não importa nada de fora (nem `twilio`, nem `langchain`, nem
-`requests`) — é Python puro. Se um teste de domínio precisar de rede ou de
-um arquivo, é sinal de que algo vazou de infraestrutura pra cá.
-
-- **`Conversa`** (Entity, aggregate root): tem identidade (`conversa_id`),
-  uma lista de `Mensagem`, e um `status` (`ATIVA`, `ESCALADA`, `ENCERRADA`).
-  É o único ponto de entrada pra mudar o estado de uma conversa — nada muda
-  uma `Mensagem` ou o `status` por fora dela.
-- **`Mensagem`** (Value Object): imutável — autor (`CLIENTE` ou `IA`),
-  conteúdo, timestamp. Dois `Mensagem` com os mesmos valores são iguais; não
-  tem identidade própria.
-- **`ResultadoTriagem`** (Value Object): o resultado de uma decisão de
-  triagem — `RESOLVIDO` (com a resposta) ou `ESCALAR` (com o motivo).
-- **`TriagemService`** (Domain Service): recebe uma `Conversa` e uma
-  `Resposta` candidata da IA e decide se ela é suficiente ou se precisa
-  escalar (regras de negócio puras — ex: a IA pediu escalar explicitamente,
-  ou o número de tentativas sem sucesso passou de um limite). Não gera a
-  resposta em si — só decide o que fazer com ela.
-
-## Portas (camada `domain/ports.py`)
-
-Interfaces (Protocols do Python) que o domínio e a aplicação dependem, mas
-que só a infraestrutura implementa. Esse é o Dependency Inversion Principle
-na prática: o domínio manda na forma do contrato, a infraestrutura obedece.
+## Portas (interfaces que os adapters implementam)
 
 - **`ProvedorLLM`**: `gerar_resposta(mensagens, trechos_contexto) -> str`
-- **`RepositorioBaseConhecimento`**: `buscar_trechos_relevantes(pergunta) -> list[Trecho]`
-- **`CanalConversa`**: `enviar_mensagem(conversa_id, texto)` /
-  callback de recebimento
+- **`BaseConhecimento`**: `buscar_trechos_relevantes(pergunta) -> list[str]`
+- **`Canal`**: `enviar_mensagem(conversa_id, texto)` / recebimento
 - **`GatewayHandoff`**: `escalar(conversa, resumo, atributos) -> None`
 
-## Casos de uso (camada `application/`)
+## Adapters (`adapters/`) — um por fase
 
-Orquestram o domínio e as portas — não têm regra de negócio própria, só
-sequenciam chamadas.
-
-- **`ProcessarMensagemRecebida`**: recebe a mensagem, busca trechos
-  relevantes (`RepositorioBaseConhecimento`), pede uma resposta ao LLM
-  (`ProvedorLLM`), passa o resultado pro `TriagemService`, e ou responde
-  pelo `CanalConversa` ou aciona `GatewayHandoff`.
-
-## Adapters (camada `infrastructure/`) — um por fase
-
-- **`OllamaProvedorLLM`** (Fase 3): implementa `ProvedorLLM` chamando um
-  Llama local via Ollama.
-- **`FaissRepositorioBaseConhecimento`** (Fase 4): implementa
-  `RepositorioBaseConhecimento` com LangChain + embeddings locais + FAISS.
-- **`TACCanalConversa`** (Fase 5): implementa `CanalConversa` usando o SDK
-  do Twilio Agent Connect.
-- **`StudioGatewayHandoff`** (Fase 6): implementa `GatewayHandoff` disparando
-  o Studio Flow de handoff (`create_studio_handoff_tool`).
+- **`OllamaProvedorLLM`** (Fase 3): Llama local via Ollama.
+- **`FaissBaseConhecimento`** (Fase 4): LangChain + embeddings locais + FAISS.
+- **`TACCanal`** (Fase 5): SDK do Twilio Agent Connect.
+- **`StudioGatewayHandoff`** (Fase 6): dispara o Studio Flow de handoff.
 - **`AnthropicProvedorLLM`** / **`OpenAIProvedorLLM`** (Fase 7): segunda
   implementação de `ProvedorLLM`, só pra provar a troca.
 
@@ -106,123 +93,107 @@ sequenciam chamadas.
 
 ```
 whatsapp-ai-agent/
-  domain/
+  core/
     __init__.py
-    entidades.py        # Conversa
-    value_objects.py     # Mensagem, ResultadoTriagem, Trecho
-    services.py          # TriagemService
-    ports.py              # ProvedorLLM, RepositorioBaseConhecimento, CanalConversa, GatewayHandoff
-  application/
-    __init__.py
-    casos_de_uso.py       # ProcessarMensagemRecebida
-  infrastructure/
+    conversa.py       # Conversa, Mensagem
+    triagem.py        # TriagemService, processar_mensagem_recebida
+    ports.py          # ProvedorLLM, BaseConhecimento, Canal, GatewayHandoff
+  adapters/
     __init__.py
     llm/
       ollama_provider.py
       anthropic_provider.py   # fase 7
     knowledge/
       faiss_repository.py
-    channels/
+    channel/
       tac_channel.py
     handoff/
       studio_gateway.py
   tests/
-    domain/
-    application/
-    infrastructure/
+    core/
+    adapters/
   docs/
-    SPEC.md              # este arquivo (cópia/origem)
-    notas-internas/       # não vai pro git — racional, debug, diário
-  main.py                 # composition root: monta os adapters e injeta nos casos de uso
+    SPEC.md            # cópia/origem
+  notas-internas/       # não vai pro git — racional, debug, diário
+  main.py                # composition root: monta os adapters e injeta
   pyproject.toml
   .env.example
   README.md
   CLAUDE.md
 ```
 
-## Fases (cada uma com objetivo de aprendizado + checkpoint)
+## Fases (cada uma com objetivo de aprendizado + critério de aceite)
 
-Cada fase termina com perguntas de autoavaliação — só avançamos pra próxima
-depois de você confirmar que testou e entendeu, seguindo o mesmo padrão já
-usado no projeto de aprendizado Twilio (Sala de Triagem).
+Cada fase só é considerada pronta quando os critérios de aceite abaixo forem
+verdadeiros — isso é o checkpoint de validação, e é a parte prática do SDD.
 
 ### Fase 0 — Esqueleto do projeto
-Objetivo de aprendizado: por que as camadas ficam em pastas separadas e por
-que isso importa (a regra é "domain nunca importa de infrastructure", nunca
-o contrário).
-Entrega: estrutura de pastas acima, módulos vazios com docstring explicando
-o papel de cada um, `pyproject.toml` com só `pytest` como dependência,
-`.env.example`, `README.md` de instalação. Zero lógica de negócio ainda.
+Aprendizado: por que separar núcleo de decisão e adapters já vale a pena
+antes mesmo de ter lógica — a estrutura de pastas já comunica a regra
+("core/ não importa de adapters/").
+Critério de aceite: estrutura de pastas acima existe, módulos com docstring
+explicando o papel de cada um (sem jargão de DDD), `pyproject.toml` com
+`pytest`, `.env.example`, `README.md` de instalação, `pytest` roda (mesmo
+vazio) sem erro.
 
-### Fase 1 — Domínio puro
-Objetivo de aprendizado: Entity vs. Value Object (identidade vs. igualdade
-por valor), Aggregate Root, Domain Service — e por que tudo isso é testável
-sem mock nenhum.
-Entrega: `Conversa`, `Mensagem`, `ResultadoTriagem`, `TriagemService`
-implementados e com testes unitários (sem I/O, sem framework).
+### Fase 1 — Núcleo de decisão puro
+Aprendizado: por que lógica de negócio testável sem mock nenhum é mais
+fácil de confiar — e como isso se paga na prática (testes rápidos, sem
+rede, sem Docker).
+Critério de aceite: `Conversa`, `Mensagem`, `TriagemService` implementados,
+com testes unitários cobrindo pelo menos: resolvido sem escalar, escalado
+por pedido explícito da IA, escalado por número de tentativas.
 
-### Fase 2 — Portas e caso de uso, com dublês de teste
-Objetivo de aprendizado: Dependency Inversion Principle, Ports & Adapters, e
-como testar um caso de uso inteiro usando implementações falsas
-(in-memory) das portas, sem precisar de Ollama, Twilio ou nada real ainda.
-Entrega: `ports.py`, `ProcessarMensagemRecebida`, testes de aplicação com
-adapters fake.
+### Fase 2 — Portas e orquestração, com adapters falsos
+Aprendizado: como testar o fluxo inteiro (`processar_mensagem_recebida`)
+usando implementações fake das portas — sem precisar de Ollama, Twilio ou
+nada real ainda.
+Critério de aceite: `ports.py` definido, `processar_mensagem_recebida`
+implementado e testado ponta a ponta com adapters fake (em memória).
 
-### Fase 3 — Primeiro adapter real: LLM local
-Objetivo de aprendizado: como um adapter concreto satisfaz uma porta
-abstrata sem que o domínio saiba disso.
-Entrega: `OllamaProvedorLLM`, testado isoladamente (chamando o Ollama de
-verdade), ainda sem RAG nem Twilio.
+### Fase 3 — Adapter real: LLM local
+Aprendizado: como um adapter concreto satisfaz uma porta abstrata sem que
+o `core/` saiba disso.
+Critério de aceite: `OllamaProvedorLLM` funcionando contra um Ollama real
+rodando localmente, testado isoladamente (ainda sem RAG nem Twilio).
 
 ### Fase 4 — RAG / Base de Conhecimento
-Objetivo de aprendizado: como o RAG se encaixa como só mais um adapter
-(`RepositorioBaseConhecimento`), sem contaminar o domínio com detalhes de
-embeddings ou vetores.
-Entrega: `FaissRepositorioBaseConhecimento` (LangChain + embeddings locais +
-FAISS), script de ingestão de documentos.
+Aprendizado: como o RAG entra como só mais um adapter, sem vazar detalhes
+de embeddings/vetores pro resto do sistema.
+Critério de aceite: `FaissBaseConhecimento` (LangChain + embeddings locais +
+FAISS) funcionando, com script de ingestão de documentos de teste.
 
 ### Fase 5 — Canal real (WhatsApp via TAC)
-Objetivo de aprendizado: como conectar tudo a um sistema externo real sem
-que esse sistema vaze pra dentro do domínio.
-Entrega: `TACCanalConversa`, servidor rodando, primeira mensagem real indo e
+Aprendizado: como conectar a um sistema externo real sem que ele vaze pro
+núcleo de decisão.
+Critério de aceite: `TACCanal` funcionando, primeira mensagem real indo e
 voltando pelo WhatsApp (Sandbox ou número real).
 
 ### Fase 6 — Handoff ponta a ponta
-Objetivo de aprendizado: como o `GatewayHandoff` é o único lugar que sabe
-que "escalar" significa "Studio Flow + TaskRouter + Flex" — o resto do
-sistema só sabe que "escalou".
-Entrega: `StudioGatewayHandoff`, teste ponta a ponta: mensagem → IA não
-resolve → Task aparece no Flex com resumo.
+Aprendizado: como o `GatewayHandoff` é o único lugar que sabe que "escalar"
+significa "Studio Flow + TaskRouter + Flex" — o resto do sistema só sabe
+que "escalou".
+Critério de aceite: `StudioGatewayHandoff` funcionando; teste ponta a ponta:
+mensagem → IA não resolve → Task aparece no Flex com resumo.
 
 ### Fase 7 — Prova de plugabilidade
-Objetivo de aprendizado: ver com os próprios olhos o motivo de ter feito
-tudo isso — trocar o LLM sem tocar em domain/application.
-Entrega: `AnthropicProvedorLLM` (ou `OpenAIProvedorLLM`), troca feita só no
-`main.py` (composition root), zero mudança em `domain/` ou `application/`.
-
-## Papéis neste projeto
-
-- **Sessão de revisão (esta conversa)**: mantém e revisa este SPEC.md,
-  explica os conceitos de DDD por trás de cada fase, avalia o código
-  entregue fase a fase, e entrega o prompt autocontido de cada fase pra
-  sessão de implementação.
-- **Sessão de implementação (VSCode/Claude Code local)**: implementa
-  exatamente o escopo da fase corrente, a partir do prompt recebido, e para
-  no checkpoint pra validação.
-- Nenhuma fase avança sem você confirmar que rodou e entendeu a anterior.
+Aprendizado: ver na prática o motivo de ter separado tudo isso — trocar o
+LLM sem tocar em `core/`.
+Critério de aceite: `AnthropicProvedorLLM` (ou `OpenAIProvedorLLM`)
+implementado; a troca acontece só no `main.py` (composition root); zero
+mudança em `core/`.
 
 ## Convenções de trabalho
 
-- Documentação em português; nomes de domínio (`domain/`, `application/`)
-  em português, seguindo a linguagem ubíqua — nomes de infraestrutura podem
-  usar termos técnicos em inglês onde for mais natural (ex: `FaissRepository`).
-- Uma branch por fase: `feat/fase0-esqueleto`, `feat/fase1-dominio`, etc.
+- Documentação em português; nomes de domínio (`Conversa`, `Mensagem`,
+  `Triagem`) seguem a língua do negócio — nomes de infraestrutura podem usar
+  termos técnicos em inglês onde for mais natural (ex: `FaissBaseConhecimento`).
+- Branch por fase, a partir da `dev` (não da `main` — ver "Padrão de Git" no
+  `CLAUDE.md`).
 - Commits pequenos e focados, Conventional Commits, em português, no
-  imperativo.
-- Nenhuma fase é implementada sem o SPEC (ou a parte dela) já revisada.
-- `git push`/merge pra `main` só acontece quando você pedir explicitamente.
-- `notas-internas/` (racional de decisões, debug, diário de aprendizado) não
-  vai pro git — mesma convenção do repositório `twilio_project`.
+  imperativo, sem trailer de coautoria de IA.
+- `main` só recebe merge quando o usuário autorizar explicitamente,
+  sinalizando estado pronto pra demonstração.
 
 ## Fora de escopo por enquanto
 
@@ -236,4 +207,5 @@ Entrega: `AnthropicProvedorLLM` (ou `OpenAIProvedorLLM`), troca feita só no
 - Twilio Agent Connect (documentação): twilio.com/docs/conversations/agent-connect
 - Twilio — Integrating Agent Connect with Flex for Human Handoff (blog): twilio.com/en-us/blog/developers/tutorials/product/twilio-agent-connect-flex-human-handoff
 - Ollama + LangChain, RAG local: markaicode.com/build-local-rag-pipeline-ollama-langchain
+- What is Spec-Driven Development? (IBM): ibm.com/think/topics/spec-driven-development
 - Documento "Integração de IA no atendimento via WhatsApp com o Twilio Flex" (levantamento de caminhos, entregue em 2026-09-11 no projeto `twilio_project`).

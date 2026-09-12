@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Notas internas do projeto (racional de decisao, debug, diario de aprendizado)
+# — nao vai pro git, ver CLAUDE.md
+notas-internas/
+
+# Ambiente local
+.env
+
+# Indice vetorial local (FAISS) gerado pela ingestao — nao versionar dados
+/data/faiss_index/

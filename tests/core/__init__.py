@@ -6,9 +6,9 @@ permite e o que ela recusa, e o fluxo de `processar_mensagem_recebida` com
 implementacoes falsas (em memoria) das portas. Nenhuma rede, nenhum
 arquivo, nenhum Docker.
 
-TODO(Fase 1): cobrir `Conversa`, `Mensagem` e os tres casos de triagem do
-criterio de aceite — resolvido sem escalar, escalado por pedido explicito
-da IA, escalado por numero de tentativas.
+    test_conversa.py  Mensagem, Conversa e suas transicoes de estado
+    test_triagem.py   as regras de decisao do TriagemService
+
 TODO(Fase 2): cobrir `processar_mensagem_recebida` ponta a ponta com
 adapters falsos.
 """

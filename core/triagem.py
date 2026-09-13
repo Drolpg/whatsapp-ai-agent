@@ -22,15 +22,14 @@ Os passos 2, 3 e 5 falam com as interfaces de `ports.py`, nunca com Ollama,
 FAISS ou Twilio direto: as implementacoes chegam prontas, passadas como
 argumento pelo `main.py`. E por isso que este fluxo pode ser testado
 inteiro com adapters falsos, sem nada real rodando.
-
-TODO(Fase 2): implementar `processar_mensagem_recebida` e testar os dois
-caminhos (resolvido pela IA e escalado pro humano) com adapters falsos.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
-from core.conversa import Autor, Conversa
+from core.conversa import Autor, Conversa, Mensagem
+from core.ports import BaseConhecimento, Canal, GatewayHandoff, ProvedorLLM
 
 MARCADOR_ESCALAR = "[ESCALAR]"
 """Sinal combinado com a IA pra dizer "nao sei resolver isto".
@@ -120,3 +119,52 @@ class TriagemService:
 
     def _tentativas_da_ia(self, conversa: Conversa) -> int:
         return sum(1 for mensagem in conversa.mensagens if mensagem.autor is Autor.IA)
+
+
+def processar_mensagem_recebida(
+    conversa: Conversa,
+    texto_cliente: str,
+    timestamp: datetime,
+    base_conhecimento: BaseConhecimento,
+    provedor_llm: ProvedorLLM,
+    triagem: TriagemService,
+    canal: Canal,
+    gateway_handoff: GatewayHandoff,
+) -> ResultadoTriagem:
+    """Processa uma mensagem do cliente do comeco ao fim, e diz o que houve.
+
+    Quem chama passa as quatro portas ja resolvidas (o `main.py` na vida
+    real, adapters falsos nos testes). Esta funcao so sequencia as chamadas:
+    a unica decisao que existe aqui e delegada ao `TriagemService`.
+
+    Um detalhe de ordem que muda o comportamento: `triagem.decidir` e
+    consultado *antes* de a resposta da IA entrar no historico. Isso mantem
+    a contagem de tentativas honesta — ela conta respostas que o cliente
+    realmente recebeu. Por consequencia, no caminho de escalonamento a
+    resposta candidata e descartada: ela nunca foi entregue, entao nao vira
+    `Mensagem` nem conta como tentativa. O atendente humano recebe o motivo
+    da triagem, nao o rascunho que a IA nao soube terminar.
+
+    O `timestamp` da mensagem do cliente e reaproveitado na resposta da IA.
+    Manter `core/` sem relogio proprio e o que torna estes testes
+    deterministicos; quando a precisao importar, quem tem o horario de
+    entrega de verdade e o adapter do canal.
+
+    Devolve o `ResultadoTriagem` pra quem chamou poder inspecionar o que
+    aconteceu sem ter que deduzir a partir do estado da conversa.
+    """
+    conversa.registrar_mensagem(Mensagem(Autor.CLIENTE, texto_cliente, timestamp))
+
+    trechos = base_conhecimento.buscar_trechos_relevantes(texto_cliente)
+    resposta_candidata = provedor_llm.gerar_resposta(conversa.mensagens, trechos)
+
+    resultado = triagem.decidir(conversa, resposta_candidata)
+
+    if resultado.decisao is Decisao.RESOLVER:
+        conversa.registrar_mensagem(Mensagem(Autor.IA, resultado.resposta, timestamp))
+        canal.enviar_mensagem(conversa.conversa_id, resultado.resposta)
+    else:
+        conversa.escalar(resultado.motivo)
+        gateway_handoff.escalar(conversa, resumo=resultado.motivo, atributos={})
+
+    return resultado

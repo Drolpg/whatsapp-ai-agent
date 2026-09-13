@@ -10,9 +10,11 @@ O indice gerado fica em `data/faiss_index/` e nao vai pro git (ver
 que o gerou, e reconstruivel em segundos por quem clonar o repositorio.
 
 Este script e um utilitario de operacao, nao parte do agente — ele nao e
-importado por `core/` nem por `main.py`. Toda a logica de FAISS que ele usa
-mora no adapter (`construir_indice`), pra que o que a ingestao produz seja
-exatamente o que a busca consome.
+importado por `core/` nem por `main.py`. Nao ha logica propria aqui: tanto a
+leitura dos documentos (`trechos_de_markdown`) quanto a construcao do indice
+(`construir_indice`) moram no adapter, pra que o que a ingestao produz seja
+exatamente o que a busca consome e o que os testes exercitam. Quando essas
+duas coisas divergiram, o limiar de similaridade nasceu calibrado errado.
 """
 
 import os
@@ -24,32 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from adapters.knowledge.faiss_repository import (  # noqa: E402
     MODELO_EMBEDDINGS_PADRAO,
     construir_indice,
+    trechos_de_markdown,
 )
 
 RAIZ = Path(__file__).resolve().parent.parent
 PASTA_DOCUMENTOS = RAIZ / "data" / "documentos"
 PASTA_INDICE = RAIZ / "data" / "faiss_index"
-
-SEPARADOR_DE_TRECHOS = "\n\n"
-"""Um trecho por paragrafo.
-
-Chunking sofisticado (janela deslizante, sobreposicao, split por tokens)
-nao se paga com um acervo deste tamanho, e atrapalharia a leitura dos
-scores na calibragem do limiar. Se o acervo crescer, este e o primeiro
-lugar a revisitar.
-"""
-
-
-def carregar_trechos(pasta: Path) -> list[str]:
-    """Le os .md da pasta e quebra cada um em paragrafos nao vazios."""
-    trechos: list[str] = []
-    for arquivo in sorted(pasta.glob("*.md")):
-        texto = arquivo.read_text(encoding="utf-8")
-        for bloco in texto.split(SEPARADOR_DE_TRECHOS):
-            limpo = " ".join(bloco.split())
-            if limpo and not limpo.startswith("#"):
-                trechos.append(limpo)
-    return trechos
 
 
 def main() -> int:
@@ -57,7 +39,7 @@ def main() -> int:
         print(f"pasta de documentos nao encontrada: {PASTA_DOCUMENTOS}")
         return 1
 
-    trechos = carregar_trechos(PASTA_DOCUMENTOS)
+    trechos = trechos_de_markdown(PASTA_DOCUMENTOS)
     if not trechos:
         print(f"nenhum trecho encontrado em {PASTA_DOCUMENTOS}/*.md")
         return 1

@@ -7,17 +7,19 @@ O quê e por quê estão no [spec.md](spec.md); a arquitetura técnica, no
 [plan.md](plan.md); as fases e critérios de aceite, no [tasks.md](tasks.md);
 as convenções de trabalho, no [CLAUDE.md](CLAUDE.md).
 
-> **Status:** Fases 0-3 concluídas e mescladas na `dev` (núcleo de decisão,
-> portas, fluxo completo com adapters fake, e o primeiro adapter real —
-> `OllamaProvedorLLM`). Aguardando validação de modelo antes da Fase 4
-> (RAG). Ver `tasks.md` pro detalhe de cada fase.
+> **Status:** Fases 0 a 3.1 mescladas na `dev` (núcleo de decisão, portas,
+> fluxo completo, LLM local e escalonamento estruturado); Fase 4 (RAG) em
+> revisão. Ainda não há canal real — o agente não fala com o WhatsApp até a
+> Fase 5. Ver `tasks.md` pro detalhe de cada fase.
 
 ## Requisitos
 
 - Python 3.11 ou superior
 - [uv](https://docs.astral.sh/uv/) para gerenciar o ambiente e as dependências
-- [Ollama](https://ollama.com) rodando localmente, com um modelo baixado
-  (ver `.env.example`) — necessário a partir da Fase 3
+- [Ollama](https://ollama.com) rodando localmente, com dois modelos
+  baixados — necessário a partir da Fase 3:
+  `ollama pull llama3.2:3b` (respostas) e
+  `ollama pull nomic-embed-text` (embeddings do RAG)
 
 ## Instalação
 
@@ -38,9 +40,20 @@ Copie o arquivo de exemplo e preencha os valores:
 cp .env.example .env
 ```
 
-As variáveis do Ollama (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`) já são usadas a
-partir da Fase 3. As do Twilio serão necessárias a partir da Fase 5. O
-`.env` não vai pro git.
+As variáveis do Ollama já são usadas a partir da Fase 3. As do Twilio
+serão necessárias a partir da Fase 5. O `.env` não vai pro git.
+
+## Base de conhecimento
+
+Antes de subir o agente, construa o índice vetorial a partir dos
+documentos em `data/documentos/`:
+
+```bash
+uv run python scripts/ingerir_documentos.py
+```
+
+O índice vai para `data/faiss_index/` e não é versionado — rode o script
+de novo sempre que os documentos mudarem.
 
 ## Como rodar os testes
 

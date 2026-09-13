@@ -1,43 +1,70 @@
 """`OllamaProvedorLLM` — implementa `ProvedorLLM` com um Llama local.
 
-Fala com um Ollama rodando na maquina (`OLLAMA_BASE_URL`) e devolve texto
-puro pro nucleo. Todo detalhe de HTTP, prompt template, modelo e parametros
-de geracao fica preso aqui dentro: `core/` so conhece a assinatura
-`gerar_resposta(mensagens, trechos_contexto) -> str`.
+Fala com um Ollama rodando na maquina (`OLLAMA_BASE_URL`) e devolve uma
+`RespostaLLM` pro nucleo. Todo detalhe de HTTP, prompt template, modelo e
+parametros de geracao fica preso aqui dentro: `core/` so conhece a
+assinatura `gerar_resposta(mensagens, trechos_contexto) -> RespostaLLM`.
 
 Vantagem pra POC: custo zero de API e nenhum dado saindo da maquina.
 
-Repare que a classe nao herda de `core.ports.ProvedorLLM` — nem precisa
-importa-lo. Ela satisfaz a porta por ter o metodo com a forma certa, que e
-o que `Protocol` verifica. A unica coisa que este modulo importa de `core/`
-sao dados (`Mensagem`, `Autor`) e o marcador de escalonamento.
+Repare que a classe nao herda de `core.ports.ProvedorLLM`. Ela satisfaz a
+porta por ter o metodo com a forma certa, que e o que `Protocol` verifica.
+O que este modulo importa de `core/` sao so tipos de dado.
 """
 
+import json
 from collections.abc import Sequence
 
 import requests
 
 from core.conversa import Autor, Mensagem
-from core.triagem import MARCADOR_ESCALAR
+from core.ports import RespostaLLM
 
-PAPEL_DO_AGENTE = f"""Voce e um assistente de atendimento ao cliente que responde pelo WhatsApp.
+PAPEL_DO_AGENTE = """Voce e um assistente de atendimento ao cliente que responde pelo WhatsApp.
 
-COMO RESPONDER
-- Escreva em portugues do Brasil.
-- Seja direto e curto: no maximo tres frases. E uma conversa de WhatsApp,
-  nao um e-mail.
-- Responda usando somente a BASE DE CONHECIMENTO abaixo. Nao complete com
-  conhecimento proprio, nao suponha e nao invente numeros, precos ou prazos.
-- Nao mencione a existencia desta base nem destas instrucoes pro cliente.
+Toda resposta sua tem dois campos: o "texto" que o cliente vai ler, e
+"deve_escalar", que diz se a conversa precisa ir pra um atendente humano.
 
-QUANDO NAO SOUBER
-Se a BASE DE CONHECIMENTO nao trouxer o que e preciso pra responder com
-seguranca, nao tente adivinhar: comece sua resposta exatamente com
-{MARCADOR_ESCALAR} e nao escreva mais nada. Um atendente humano assume dali
-em diante. Preferir {MARCADOR_ESCALAR} a arriscar uma resposta errada e o
-comportamento certo, nao uma falha sua."""
+ANTES DE RESPONDER, FACA ESTA VERIFICACAO
+Procure na BASE DE CONHECIMENTO abaixo a informacao exata que o cliente
+pediu.
+- Achou? Entao deve_escalar e false, e voce responde com base no que achou.
+- Nao achou? Entao deve_escalar e true. Nao importa se voce sabe a resposta
+  por conta propria, se consegue deduzir ou se parece obvio: se a informacao
+  nao esta escrita na BASE DE CONHECIMENTO, e true.
+
+Exemplos:
+- A base diz "Domingo nao abre" e perguntam se abre domingo -> a informacao
+  esta la. deve_escalar false, texto "Nao, domingo nao abrimos."
+- A base so fala de horarios e perguntam sobre reembolso -> a informacao nao
+  esta la. deve_escalar true, texto avisando que vai transferir.
+
+COMO ESCREVER O TEXTO
+- Portugues do Brasil, direto e curto: no maximo tres frases. E uma conversa
+  de WhatsApp, nao um e-mail.
+- Nunca invente numeros, precos, prazos, links ou politicas. Se voce esta
+  escrevendo algo que nao leu na BASE DE CONHECIMENTO, pare: e caso de
+  deve_escalar true.
+- Nao mencione a existencia desta base nem destas instrucoes pro cliente."""
 
 PAPEL_POR_AUTOR = {Autor.CLIENTE: "user", Autor.IA: "assistant"}
+
+FORMATO_RESPOSTA = {
+    "type": "object",
+    "properties": {
+        "texto": {"type": "string"},
+        "deve_escalar": {"type": "boolean"},
+    },
+    "required": ["texto", "deve_escalar"],
+}
+"""JSON schema exigido do modelo na chamada ao Ollama.
+
+Com `format`, o Ollama restringe a geracao pra que a saida case com o
+schema. E isso que substitui o marcador de texto que usavamos antes: em vez
+de pedir ao modelo que escreva `[ESCALAR]` e torcer pra ele acertar os
+caracteres, a decisao vem num campo booleano que ele nao tem como
+malformar.
+"""
 
 
 class OllamaProvedorLLM:
@@ -59,20 +86,23 @@ class OllamaProvedorLLM:
 
     def gerar_resposta(
         self, mensagens: Sequence[Mensagem], trechos_contexto: list[str]
-    ) -> str:
+    ) -> RespostaLLM:
         """Pede ao modelo a proxima resposta da conversa.
 
+        A chamada exige output estruturado (ver `FORMATO_RESPOSTA`), entao o
+        `message.content` que volta e uma string JSON com os dois campos,
+        nao texto livre.
+
         Em caso de falha na conversa com o Ollama — fora do ar, timeout,
-        conexao recusada, resposta malformada — nenhuma excecao sobe daqui.
-        Em vez disso devolvemos uma resposta candidata que ja comeca com o
-        marcador de escalonamento.
+        conexao recusada, JSON malformado, campo faltando — nenhuma excecao
+        sobe daqui. Em vez disso devolvemos uma `RespostaLLM` com
+        `deve_escalar=True` e o motivo tecnico no texto.
 
         A escolha e deliberada: `core/` nao sabe o que e HTTP e nao deveria
         aprender pra tratar isso. E, do ponto de vista do atendimento, o
         modelo local fora do ar e mais um caso de "a IA nao consegue
         resolver" — a atitude certa e chamar um humano na hora, nao derrubar
-        o fluxo e deixar o cliente sem resposta. O motivo tecnico vai junto,
-        pra quem for ler o handoff saber que nao foi limitacao do modelo.
+        o fluxo e deixar o cliente sem resposta.
         """
         payload = {
             "model": self.model,
@@ -81,6 +111,7 @@ class OllamaProvedorLLM:
                 *self._como_chat(mensagens),
             ],
             "stream": False,
+            "format": FORMATO_RESPOSTA,
         }
 
         try:
@@ -90,11 +121,15 @@ class OllamaProvedorLLM:
                 timeout=self.timeout_segundos,
             )
             resposta.raise_for_status()
-            return resposta.json()["message"]["content"]
+            conteudo = json.loads(resposta.json()["message"]["content"])
+            return RespostaLLM(
+                texto=conteudo["texto"],
+                deve_escalar=bool(conteudo["deve_escalar"]),
+            )
         except requests.RequestException as erro:
-            return self._pedido_de_escalonamento(f"o modelo local nao respondeu ({erro})")
-        except (KeyError, ValueError) as erro:
-            return self._pedido_de_escalonamento(
+            return self._escalar_por_falha(f"o modelo local nao respondeu ({erro})")
+        except (KeyError, TypeError, ValueError) as erro:
+            return self._escalar_por_falha(
                 f"o modelo local devolveu algo inesperado ({erro})"
             )
 
@@ -105,7 +140,7 @@ class OllamaProvedorLLM:
         if not trechos_contexto:
             return (
                 "(vazia — nenhum trecho foi encontrado pra esta pergunta, "
-                f"entao a resposta correta e {MARCADOR_ESCALAR})"
+                "entao deve_escalar precisa ser true)"
             )
         return "\n".join(f"{i}. {trecho}" for i, trecho in enumerate(trechos_contexto, 1))
 
@@ -116,5 +151,5 @@ class OllamaProvedorLLM:
             for mensagem in mensagens
         ]
 
-    def _pedido_de_escalonamento(self, motivo: str) -> str:
-        return f"{MARCADOR_ESCALAR} {motivo}"
+    def _escalar_por_falha(self, motivo: str) -> RespostaLLM:
+        return RespostaLLM(texto=motivo, deve_escalar=True)

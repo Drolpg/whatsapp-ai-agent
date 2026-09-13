@@ -5,9 +5,9 @@ o adapter conversa com o Ollama real. Por isso duas coisas:
 
 1. os testes que precisam do Ollama sao pulados (nao falham) quando ele nao
    esta rodando — a suite continua util numa maquina sem Ollama;
-2. as asserts falam da *forma* da resposta (e str, nao e vazia), nunca do
-   conteudo: do outro lado ha um modelo de linguagem, e a saida varia a cada
-   chamada.
+2. as asserts falam da *forma* da resposta (e uma RespostaLLM, o texto nao
+   e vazio, deve_escalar e booleano), nunca do conteudo: do outro lado ha um
+   modelo de linguagem, e a saida varia a cada chamada.
 
 O caminho de falha (Ollama fora do ar) e o unico deterministico, e nao
 precisa de Ollama nenhum pra rodar: basta apontar pra uma porta fechada.
@@ -21,7 +21,7 @@ import requests
 
 from adapters.llm.ollama_provider import OllamaProvedorLLM
 from core.conversa import Autor, Mensagem
-from core.triagem import MARCADOR_ESCALAR
+from core.ports import RespostaLLM
 
 BASE_URL_PADRAO = "http://localhost:11434"
 BASE_URL_INALCANCAVEL = "http://localhost:1"
@@ -75,15 +75,17 @@ def _pergunta(texto: str) -> list[Mensagem]:
 
 
 class TestContraOllamaReal:
-    def test_responde_uma_pergunta_coberta_pelos_trechos(self, base_url, modelo):
+    def test_devolve_uma_RespostaLLM_bem_formada(self, base_url, modelo):
         provedor = OllamaProvedorLLM(base_url=base_url, model=modelo, timeout_segundos=120.0)
 
         resposta = provedor.gerar_resposta(
             _pergunta("a loja abre no domingo?"), trechos_contexto=TRECHOS
         )
 
-        assert isinstance(resposta, str)
-        assert resposta.strip() != ""
+        assert isinstance(resposta, RespostaLLM)
+        assert isinstance(resposta.texto, str)
+        assert resposta.texto.strip() != ""
+        assert isinstance(resposta.deve_escalar, bool)
 
     def test_leva_o_historico_da_conversa_e_nao_so_a_ultima_mensagem(self, base_url, modelo):
         """Uma conversa com varios turnos precisa ser aceita pela API de chat.
@@ -100,48 +102,53 @@ class TestContraOllamaReal:
 
         resposta = provedor.gerar_resposta(historico, trechos_contexto=TRECHOS)
 
-        assert isinstance(resposta, str)
-        assert resposta.strip() != ""
+        assert isinstance(resposta, RespostaLLM)
+        assert resposta.texto.strip() != ""
 
-    def test_sem_trechos_de_contexto_ainda_devolve_uma_string(self, base_url, modelo):
+    def test_sem_trechos_de_contexto_ainda_devolve_uma_RespostaLLM(self, base_url, modelo):
         provedor = OllamaProvedorLLM(base_url=base_url, model=modelo, timeout_segundos=120.0)
 
         resposta = provedor.gerar_resposta(_pergunta("qual o horario?"), trechos_contexto=[])
 
-        assert isinstance(resposta, str)
-        assert resposta.strip() != ""
+        assert isinstance(resposta, RespostaLLM)
+        assert isinstance(resposta.deve_escalar, bool)
 
 
 class TestQuandoOOllamaEstaForaDoAr:
     """O caminho de falha, deterministico e sem depender de Ollama nenhum."""
 
+    def _provedor_inalcancavel(self) -> OllamaProvedorLLM:
+        return OllamaProvedorLLM(
+            base_url=BASE_URL_INALCANCAVEL, model="qualquer", timeout_segundos=2.0
+        )
+
     def test_nao_levanta_excecao(self):
-        provedor = OllamaProvedorLLM(
-            base_url=BASE_URL_INALCANCAVEL, model="qualquer", timeout_segundos=2.0
-        )
-
-        provedor.gerar_resposta(_pergunta("a loja abre no domingo?"), trechos_contexto=TRECHOS)
-
-    def test_devolve_uma_resposta_que_pede_escalonamento(self):
-        provedor = OllamaProvedorLLM(
-            base_url=BASE_URL_INALCANCAVEL, model="qualquer", timeout_segundos=2.0
-        )
-
-        resposta = provedor.gerar_resposta(
+        self._provedor_inalcancavel().gerar_resposta(
             _pergunta("a loja abre no domingo?"), trechos_contexto=TRECHOS
         )
 
-        assert MARCADOR_ESCALAR in resposta
+    def test_pede_escalonamento_pelo_campo(self):
+        resposta = self._provedor_inalcancavel().gerar_resposta(
+            _pergunta("a loja abre no domingo?"), trechos_contexto=TRECHOS
+        )
+
+        assert resposta.deve_escalar is True
+
+    def test_o_texto_explica_o_motivo_tecnico(self):
+        resposta = self._provedor_inalcancavel().gerar_resposta(
+            _pergunta("a loja abre no domingo?"), trechos_contexto=TRECHOS
+        )
+
+        assert resposta.texto.strip() != ""
 
     def test_a_triagem_de_fato_escala_com_essa_resposta(self):
         """O que importa de verdade: a falha vira handoff, nao um erro."""
         from core.conversa import Conversa
         from core.triagem import Decisao, TriagemService
 
-        provedor = OllamaProvedorLLM(
-            base_url=BASE_URL_INALCANCAVEL, model="qualquer", timeout_segundos=2.0
+        resposta = self._provedor_inalcancavel().gerar_resposta(
+            _pergunta("a loja abre?"), trechos_contexto=[]
         )
-        resposta = provedor.gerar_resposta(_pergunta("a loja abre?"), trechos_contexto=[])
 
         resultado = TriagemService().decidir(Conversa(conversa_id="c1"), resposta)
 

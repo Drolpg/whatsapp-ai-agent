@@ -1,20 +1,16 @@
 """Testes de `processar_mensagem_recebida` — o fluxo inteiro, ponta a ponta.
 
 As quatro portas sao satisfeitas por classes falsas definidas aqui mesmo.
-Repare que nenhuma delas herda de `core.ports`, nem importa de la: sao
-aceitas porque tem os metodos certos, e e exatamente isso que `Protocol`
-promete. Nenhum framework de mock, nenhuma rede, nenhum arquivo.
+Repare que nenhuma delas herda de `core.ports`: sao aceitas porque tem os
+metodos certos, e e exatamente isso que `Protocol` promete. Nenhum framework
+de mock, nenhuma rede, nenhum arquivo.
 """
 
 from datetime import datetime
 
 from core.conversa import Autor, Conversa, Mensagem, StatusConversa
-from core.triagem import (
-    MARCADOR_ESCALAR,
-    Decisao,
-    TriagemService,
-    processar_mensagem_recebida,
-)
+from core.ports import RespostaLLM
+from core.triagem import Decisao, TriagemService, processar_mensagem_recebida
 
 AGORA = datetime(2026, 9, 13, 14, 30)
 
@@ -34,12 +30,12 @@ class FakeBaseConhecimento:
 class FakeProvedorLLM:
     """Devolve a resposta combinada no construtor, e guarda o que recebeu."""
 
-    def __init__(self, resposta: str) -> None:
-        self.resposta = resposta
+    def __init__(self, texto: str, deve_escalar: bool = False) -> None:
+        self.resposta = RespostaLLM(texto=texto, deve_escalar=deve_escalar)
         self.mensagens_recebidas: list[tuple[Mensagem, ...]] = []
         self.trechos_recebidos: list[list[str]] = []
 
-    def gerar_resposta(self, mensagens, trechos_contexto: list[str]) -> str:
+    def gerar_resposta(self, mensagens, trechos_contexto: list[str]) -> RespostaLLM:
         self.mensagens_recebidas.append(tuple(mensagens))
         self.trechos_recebidos.append(list(trechos_contexto))
         return self.resposta
@@ -65,10 +61,16 @@ class FakeGatewayHandoff:
         self.escalonamentos.append((conversa, resumo, atributos))
 
 
-def _processar(conversa, resposta_do_llm, texto_cliente="qual o horario?", limite=3):
+def _processar(
+    conversa,
+    texto_do_llm,
+    deve_escalar=False,
+    texto_cliente="qual o horario?",
+    limite=3,
+):
     """Roda o fluxo com fakes, e devolve o resultado junto dos fakes usados."""
     base = FakeBaseConhecimento()
-    llm = FakeProvedorLLM(resposta_do_llm)
+    llm = FakeProvedorLLM(texto_do_llm, deve_escalar=deve_escalar)
     canal = FakeCanal()
     handoff = FakeGatewayHandoff()
 
@@ -131,6 +133,15 @@ class TestQuandoAIAResolve:
             Mensagem(Autor.IA, "Das 9h as 18h.", AGORA),
         )
 
+    def test_o_historico_guarda_o_texto_e_nao_a_RespostaLLM_inteira(self):
+        conversa = Conversa(conversa_id="c1")
+
+        _processar(conversa, "Das 9h as 18h.")
+
+        ultima = conversa.mensagens[-1]
+        assert isinstance(ultima.conteudo, str)
+        assert ultima.conteudo == "Das 9h as 18h."
+
 
 class TestOQueOFluxoEntregaAsPortas:
     def test_a_base_de_conhecimento_recebe_a_pergunta_do_cliente(self):
@@ -148,7 +159,9 @@ class TestOQueOFluxoEntregaAsPortas:
     def test_o_llm_recebe_o_historico_ja_com_a_pergunta_atual(self):
         conversa = Conversa(conversa_id="c1")
 
-        _, _, llm, _, _ = _processar(conversa, "Das 9h as 18h.", texto_cliente="qual o horario?")
+        _, _, llm, _, _ = _processar(
+            conversa, "Das 9h as 18h.", texto_cliente="qual o horario?"
+        )
 
         assert llm.mensagens_recebidas == [
             (Mensagem(Autor.CLIENTE, "qual o horario?", AGORA),)
@@ -167,14 +180,14 @@ class TestOQueOFluxoEntregaAsPortas:
 class TestQuandoAIAPedeParaEscalar:
     def test_devolve_decisao_de_escalar(self):
         resultado, *_ = _processar(
-            Conversa(conversa_id="c1"), f"{MARCADOR_ESCALAR} nao sei responder"
+            Conversa(conversa_id="c1"), "nao sei responder", deve_escalar=True
         )
 
         assert resultado.decisao is Decisao.ESCALAR
 
     def test_o_handoff_recebe_o_motivo_da_triagem(self):
         resultado, _, _, _, handoff = _processar(
-            Conversa(conversa_id="c1"), f"{MARCADOR_ESCALAR} nao sei responder"
+            Conversa(conversa_id="c1"), "nao sei responder", deve_escalar=True
         )
 
         assert [resumo for _, resumo, _ in handoff.escalonamentos] == [resultado.motivo]
@@ -182,7 +195,7 @@ class TestQuandoAIAPedeParaEscalar:
     def test_o_handoff_recebe_a_conversa_ja_escalada(self):
         conversa = Conversa(conversa_id="c1")
 
-        _, _, _, _, handoff = _processar(conversa, MARCADOR_ESCALAR)
+        _, _, _, _, handoff = _processar(conversa, "vou transferir", deve_escalar=True)
 
         (conversa_escalada, _, _) = handoff.escalonamentos[0]
         assert conversa_escalada is conversa
@@ -190,7 +203,7 @@ class TestQuandoAIAPedeParaEscalar:
 
     def test_o_cliente_nao_recebe_nada_pelo_canal(self):
         _, _, _, canal, _ = _processar(
-            Conversa(conversa_id="c1"), f"{MARCADOR_ESCALAR} nao sei responder"
+            Conversa(conversa_id="c1"), "nao sei responder", deve_escalar=True
         )
 
         assert canal.enviadas == []
@@ -198,18 +211,31 @@ class TestQuandoAIAPedeParaEscalar:
     def test_a_conversa_fica_escalada(self):
         conversa = Conversa(conversa_id="c1")
 
-        _processar(conversa, MARCADOR_ESCALAR)
+        _processar(conversa, "vou transferir", deve_escalar=True)
 
         assert conversa.status is StatusConversa.ESCALADA
 
     def test_a_resposta_candidata_nao_entra_no_historico(self):
         conversa = Conversa(conversa_id="c1")
 
-        _processar(conversa, f"{MARCADOR_ESCALAR} nao sei", texto_cliente="pergunta dificil")
+        _processar(
+            conversa, "nao sei", deve_escalar=True, texto_cliente="pergunta dificil"
+        )
 
         assert conversa.mensagens == (
             Mensagem(Autor.CLIENTE, "pergunta dificil", AGORA),
         )
+
+    def test_um_texto_que_parece_resposta_normal_ainda_escala(self):
+        """A decisao vem do campo, nao de inspecionar o texto."""
+        conversa = Conversa(conversa_id="c1")
+
+        _, _, _, canal, handoff = _processar(
+            conversa, "Das 9h as 18h.", deve_escalar=True
+        )
+
+        assert canal.enviadas == []
+        assert len(handoff.escalonamentos) == 1
 
 
 class TestQuandoEstouraOLimiteDeTentativas:
@@ -223,7 +249,9 @@ class TestQuandoEstouraOLimiteDeTentativas:
     def test_a_terceira_pergunta_ainda_e_respondida_com_limite_de_tres(self):
         conversa = _conversa_com_respostas_da_ia(2)
 
-        resultado, _, _, canal, _ = _processar(conversa, "Tente reiniciar o app.", limite=3)
+        resultado, _, _, canal, _ = _processar(
+            conversa, "Tente reiniciar o app.", limite=3
+        )
 
         assert resultado.decisao is Decisao.RESOLVER
         assert canal.enviadas == [("c1", "Tente reiniciar o app.")]

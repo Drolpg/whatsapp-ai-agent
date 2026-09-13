@@ -2,12 +2,12 @@
 
 Duas pecas, ambas sem dependencia externa:
 
-`TriagemService` recebe uma `Conversa` e a resposta candidata gerada pela
-IA, e decide se ela resolve o atendimento ou se a conversa deve ser
-escalada pra um humano (ex: a IA pediu escalar explicitamente, ou o numero
-de tentativas sem sucesso passou do limite). Repare no que ele *nao* faz:
-nao gera a resposta e nao sabe quem a gerou — isso e problema de um
-`ProvedorLLM` la em `adapters/`. Ele so decide o que fazer com ela.
+`TriagemService` recebe uma `Conversa` e a `RespostaLLM` gerada pela IA, e
+decide se ela resolve o atendimento ou se a conversa deve ser escalada pra
+um humano (ex: a IA pediu escalar explicitamente, ou o numero de tentativas
+sem sucesso passou do limite). Repare no que ele *nao* faz: nao gera a
+resposta, nao sabe quem a gerou e nao le o texto dela — isso e problema de
+um `ProvedorLLM` la em `adapters/`. Ele so decide o que fazer com ela.
 
 `processar_mensagem_recebida` e a funcao que costura o fluxo inteiro:
 
@@ -29,16 +29,13 @@ from datetime import datetime
 from enum import Enum
 
 from core.conversa import Autor, Conversa, Mensagem
-from core.ports import BaseConhecimento, Canal, GatewayHandoff, ProvedorLLM
-
-MARCADOR_ESCALAR = "[ESCALAR]"
-"""Sinal combinado com a IA pra dizer "nao sei resolver isto".
-
-A porta `ProvedorLLM` devolve texto puro, entao o pedido de escalonamento
-precisa vir dentro do proprio texto. O prompt (la em `adapters/llm/`)
-instrui o modelo a comecar a resposta com este marcador quando nao souber
-responder; aqui so procuramos por ele.
-"""
+from core.ports import (
+    BaseConhecimento,
+    Canal,
+    GatewayHandoff,
+    ProvedorLLM,
+    RespostaLLM,
+)
 
 LIMITE_TENTATIVAS_PADRAO = 3
 """Quantas respostas da IA sem resolver antes de chamar um humano.
@@ -84,10 +81,13 @@ class TriagemService:
 
     Duas regras, nesta ordem:
 
-    1. a IA sinalizou que nao sabe resolver (o `MARCADOR_ESCALAR` aparece na
-       resposta);
+    1. a IA sinalizou que nao sabe resolver (`resposta.deve_escalar`);
     2. a IA ja tentou `limite_tentativas` vezes nesta conversa e o cliente
        continua voltando — sinal de que ela nao vai chegar la sozinha.
+
+    A regra 1 le um campo, nao o texto: o que a IA escreveu nao influencia
+    a decisao, e uma resposta que por acaso fale em "escalar" continua
+    sendo uma resposta normal.
 
     Nao ha estado interno: a contagem de tentativas sai da propria
     `Conversa`, contando as mensagens que a IA ja enviou.
@@ -100,9 +100,9 @@ class TriagemService:
             )
         self.limite_tentativas = limite_tentativas
 
-    def decidir(self, conversa: Conversa, resposta_candidata: str) -> ResultadoTriagem:
+    def decidir(self, conversa: Conversa, resposta: RespostaLLM) -> ResultadoTriagem:
         """Diz se a resposta candidata vai pro cliente ou se a conversa escala."""
-        if self._ia_pediu_ajuda(resposta_candidata):
+        if resposta.deve_escalar:
             return ResultadoTriagem.escalar("a IA sinalizou que nao sabe resolver")
 
         tentativas = self._tentativas_da_ia(conversa)
@@ -112,10 +112,7 @@ class TriagemService:
                 f"(limite: {self.limite_tentativas})"
             )
 
-        return ResultadoTriagem.resolver(resposta_candidata)
-
-    def _ia_pediu_ajuda(self, resposta_candidata: str) -> bool:
-        return MARCADOR_ESCALAR.lower() in resposta_candidata.lower()
+        return ResultadoTriagem.resolver(resposta.texto)
 
     def _tentativas_da_ia(self, conversa: Conversa) -> int:
         return sum(1 for mensagem in conversa.mensagens if mensagem.autor is Autor.IA)
@@ -156,12 +153,12 @@ def processar_mensagem_recebida(
     conversa.registrar_mensagem(Mensagem(Autor.CLIENTE, texto_cliente, timestamp))
 
     trechos = base_conhecimento.buscar_trechos_relevantes(texto_cliente)
-    resposta_candidata = provedor_llm.gerar_resposta(conversa.mensagens, trechos)
+    resposta_llm = provedor_llm.gerar_resposta(conversa.mensagens, trechos)
 
-    resultado = triagem.decidir(conversa, resposta_candidata)
+    resultado = triagem.decidir(conversa, resposta_llm)
 
     if resultado.decisao is Decisao.RESOLVER:
-        conversa.registrar_mensagem(Mensagem(Autor.IA, resultado.resposta, timestamp))
+        conversa.registrar_mensagem(Mensagem(Autor.IA, resposta_llm.texto, timestamp))
         canal.enviar_mensagem(conversa.conversa_id, resultado.resposta)
     else:
         conversa.escalar(resultado.motivo)

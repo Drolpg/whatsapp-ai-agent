@@ -49,10 +49,16 @@ arquivo, é sinal de que algo vazou de infraestrutura pra cá.
   `ENCERRADA`). É o único jeito de mudar o estado de uma conversa.
 - **`Mensagem`**: autor (`CLIENTE` ou `IA`), conteúdo, timestamp. Simples,
   imutável.
-- **`TriagemService`**: recebe a `Conversa` e uma resposta candidata da IA, e
-  decide se ela é suficiente ou se precisa escalar (ex: a IA pediu escalar
-  explicitamente, ou passou de um número de tentativas sem sucesso). Não
-  gera a resposta — só decide o que fazer com ela.
+- **`RespostaLLM`**: o que a IA devolve — `texto` (o que iria pro cliente) e
+  `deve_escalar` (se ela se considera incapaz de responder). Dois campos
+  separados de propósito: o pedido de escalonamento já morou dentro do
+  próprio texto, como um marcador combinado, e o modelo o corrompia (ver
+  Fase 3.1).
+- **`TriagemService`**: recebe a `Conversa` e a `RespostaLLM` candidata, e
+  decide se ela é suficiente ou se precisa escalar (a IA marcou
+  `deve_escalar`, ou passou de um número de tentativas sem sucesso). Não
+  gera a resposta, não sabe quem a gerou e não lê o texto dela — só decide
+  o que fazer com ela.
 - **`processar_mensagem_recebida`**: a função que orquestra tudo — busca
   trechos relevantes, pede resposta ao LLM, passa pro `TriagemService`, e ou
   responde pelo canal ou aciona o handoff. Fica aqui mesmo (não precisa de
@@ -60,10 +66,16 @@ arquivo, é sinal de que algo vazou de infraestrutura pra cá.
 
 ## Portas (interfaces que os adapters implementam)
 
-- **`ProvedorLLM`**: `gerar_resposta(mensagens, trechos_contexto) -> str`
+- **`ProvedorLLM`**: `gerar_resposta(mensagens, trechos_contexto) -> RespostaLLM`
 - **`BaseConhecimento`**: `buscar_trechos_relevantes(pergunta) -> list[str]`
 - **`Canal`**: `enviar_mensagem(conversa_id, texto)` / recebimento
 - **`GatewayHandoff`**: `escalar(conversa, resumo, atributos) -> None`
+
+Lista vazia é resposta válida de `BaseConhecimento`: significa que nada no
+acervo ajuda com aquela pergunta. É isso que permite a decisão de cobertura
+da Fase 4 morar na recuperação sem mudar assinatura de porta nenhuma — o
+adapter aplica o limiar de similaridade internamente e devolve `[]`, e o
+núcleo trata `[]` como "escala sem nem chamar o LLM".
 
 ## Adapters (`adapters/`) — um por fase
 

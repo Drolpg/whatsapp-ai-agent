@@ -67,9 +67,10 @@ def _processar(
     deve_escalar=False,
     texto_cliente="qual o horario?",
     limite=3,
+    trechos=None,
 ):
     """Roda o fluxo com fakes, e devolve o resultado junto dos fakes usados."""
-    base = FakeBaseConhecimento()
+    base = FakeBaseConhecimento(trechos)
     llm = FakeProvedorLLM(texto_do_llm, deve_escalar=deve_escalar)
     canal = FakeCanal()
     handoff = FakeGatewayHandoff()
@@ -236,6 +237,72 @@ class TestQuandoAIAPedeParaEscalar:
 
         assert canal.enviadas == []
         assert len(handoff.escalonamentos) == 1
+
+
+class TestQuandoABaseNaoTemNadaRelevante:
+    """Lista vazia da base encerra o assunto antes de o LLM entrar em cena.
+
+    E a correcao estrutural da Fase 4: a pergunta "o acervo cobre isso?" e
+    respondida pela recuperacao, que tem um score pra medir, e nao pelo
+    modelo, que no benchmark da Fase 3.1 nao soube discriminar.
+    """
+
+    def test_o_llm_nao_e_chamado(self):
+        _, _, llm, _, _ = _processar(
+            Conversa(conversa_id="c1"), "resposta que nunca sera gerada", trechos=[]
+        )
+
+        assert llm.mensagens_recebidas == []
+
+    def test_o_handoff_e_acionado(self):
+        _, _, _, _, handoff = _processar(
+            Conversa(conversa_id="c1"), "irrelevante", trechos=[]
+        )
+
+        assert len(handoff.escalonamentos) == 1
+
+    def test_devolve_decisao_de_escalar(self):
+        resultado, *_ = _processar(Conversa(conversa_id="c1"), "irrelevante", trechos=[])
+
+        assert resultado.decisao is Decisao.ESCALAR
+
+    def test_o_motivo_aponta_a_base_de_conhecimento(self):
+        resultado, *_ = _processar(Conversa(conversa_id="c1"), "irrelevante", trechos=[])
+
+        assert "base de conhecimento" in resultado.motivo.lower()
+
+    def test_a_conversa_fica_escalada(self):
+        conversa = Conversa(conversa_id="c1")
+
+        _processar(conversa, "irrelevante", trechos=[])
+
+        assert conversa.status is StatusConversa.ESCALADA
+
+    def test_o_cliente_nao_recebe_nada_pelo_canal(self):
+        _, _, _, canal, _ = _processar(
+            Conversa(conversa_id="c1"), "irrelevante", trechos=[]
+        )
+
+        assert canal.enviadas == []
+
+    def test_a_pergunta_do_cliente_continua_no_historico(self):
+        conversa = Conversa(conversa_id="c1")
+
+        _processar(conversa, "irrelevante", texto_cliente="e sobre outra coisa", trechos=[])
+
+        assert conversa.mensagens == (
+            Mensagem(Autor.CLIENTE, "e sobre outra coisa", AGORA),
+        )
+
+    def test_escala_mesmo_com_o_llm_dizendo_que_resolveria(self):
+        """Nao adianta o modelo achar que sabe: sem acervo, nao ha o que citar."""
+        resultado, _, llm, canal, _ = _processar(
+            Conversa(conversa_id="c1"), "Sei a resposta!", deve_escalar=False, trechos=[]
+        )
+
+        assert resultado.decisao is Decisao.ESCALAR
+        assert llm.mensagens_recebidas == []
+        assert canal.enviadas == []
 
 
 class TestQuandoEstouraOLimiteDeTentativas:

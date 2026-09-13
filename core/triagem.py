@@ -13,9 +13,10 @@ um `ProvedorLLM` la em `adapters/`. Ele so decide o que fazer com ela.
 
     1. registra a mensagem do cliente na `Conversa`;
     2. busca trechos relevantes na `BaseConhecimento` (RAG);
-    3. pede uma resposta candidata ao `ProvedorLLM`;
-    4. entrega essa candidata ao `TriagemService`, que decide;
-    5. conforme a decisao, ou responde pelo `Canal` ou aciona o
+    3. se nao veio nenhum trecho, escala na hora — sem chamar o LLM;
+    4. pede uma resposta candidata ao `ProvedorLLM`;
+    5. entrega essa candidata ao `TriagemService`, que decide;
+    6. conforme a decisao, ou responde pelo `Canal` ou aciona o
        `GatewayHandoff`.
 
 Os passos 2, 3 e 5 falam com as interfaces de `ports.py`, nunca com Ollama,
@@ -36,6 +37,17 @@ from core.ports import (
     ProvedorLLM,
     RespostaLLM,
 )
+
+MOTIVO_SEM_CONTEXTO = (
+    "a base de conhecimento nao tem nada relevante pra esta pergunta"
+)
+"""Motivo do escalonamento quando a recuperacao volta de maos vazias.
+
+Este caminho nem consulta o LLM. A razao esta na Fase 3.1: pedir ao modelo
+que admita nao saber nao funciona — ele inventa. Quando a recuperacao ja
+disse que o acervo nao cobre a pergunta, nao ha o que a IA possa responder
+sem inventar, entao a conversa vai direto pro humano.
+"""
 
 LIMITE_TENTATIVAS_PADRAO = 3
 """Quantas respostas da IA sem resolver antes de chamar um humano.
@@ -131,8 +143,14 @@ def processar_mensagem_recebida(
     """Processa uma mensagem do cliente do comeco ao fim, e diz o que houve.
 
     Quem chama passa as quatro portas ja resolvidas (o `main.py` na vida
-    real, adapters falsos nos testes). Esta funcao so sequencia as chamadas:
-    a unica decisao que existe aqui e delegada ao `TriagemService`.
+    real, adapters falsos nos testes). Esta funcao so sequencia as chamadas
+    — a decisao sobre a resposta da IA e delegada ao `TriagemService`.
+
+    A excecao e a checagem de contexto vazio, que fica aqui de proposito: ela
+    acontece *antes* de existir qualquer resposta candidata pra triar, entao
+    nao teria como morar no `TriagemService`. Quando a recuperacao nao acha
+    nada relevante, a conversa escala direto, sem gastar uma chamada de LLM
+    pra perguntar ao modelo se ele sabe algo que o acervo nao tem.
 
     Um detalhe de ordem que muda o comportamento: `triagem.decidir` e
     consultado *antes* de a resposta da IA entrar no historico. Isso mantem
@@ -153,6 +171,13 @@ def processar_mensagem_recebida(
     conversa.registrar_mensagem(Mensagem(Autor.CLIENTE, texto_cliente, timestamp))
 
     trechos = base_conhecimento.buscar_trechos_relevantes(texto_cliente)
+
+    if not trechos:
+        resultado = ResultadoTriagem.escalar(MOTIVO_SEM_CONTEXTO)
+        conversa.escalar(resultado.motivo)
+        gateway_handoff.escalar(conversa, resumo=resultado.motivo, atributos={})
+        return resultado
+
     resposta_llm = provedor_llm.gerar_resposta(conversa.mensagens, trechos)
 
     resultado = triagem.decidir(conversa, resposta_llm)

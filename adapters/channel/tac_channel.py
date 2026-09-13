@@ -1,14 +1,83 @@
-"""`TACCanal` — implementa `Canal` via Twilio Agent Connect.
+"""`TACCanal` — implementa `Canal` via Twilio Agent Connect / Conversations.
 
-Entrada e saida do WhatsApp: recebe as mensagens do cliente pelo webhook do
-TAC, converte o payload do Twilio nos termos do projeto e entrega pro fluxo
-de triagem; na volta, envia o texto da resposta pelo mesmo canal.
+Saida do WhatsApp: posta a resposta da IA na Conversation do Twilio, que se
+encarrega de entregar no canal em que o cliente esta.
 
-E o unico lugar do sistema que conhece `TWILIO_ACCOUNT_SID`,
-`TWILIO_CONVERSATION_CONFIGURATION_ID` e o formato de webhook do Twilio.
-A licao da Fase 5 e essa: conectar um sistema externo real sem deixar que
-ele vaze pro nucleo de decisao.
+Este e o unico lugar do sistema que conhece `TWILIO_ACCOUNT_SID`,
+`TWILIO_AUTH_TOKEN` e o formato da API do Twilio. A licao da Fase 5 e essa:
+conectar um sistema externo real sem deixar que ele vaze pro nucleo de
+decisao. A entrada — mensagens do cliente chegando — mora em `webhook.py`,
+porque a porta `Canal` cobre so a saida (ver o docstring dela em
+`core/ports.py`).
 
-TODO(Fase 5): implementar o adapter e o servidor que expoe o webhook, ate a
-primeira mensagem real ir e voltar pelo WhatsApp (Sandbox ou numero real).
+O QUE `conversa_id` E, DO LADO DO TWILIO
+E o **Conversation SID** (`CHxxxxxxxx...`), e a escolha nao e arbitraria:
+
+- e o identificador que o Twilio manda em todo webhook `onMessageAdded`
+  (campo `ConversationSid`), entao a entrada ja o tem em maos;
+- e exatamente o que o endpoint de envio precisa na URL
+  (`/v1/Conversations/{sid}/Messages`), entao a saida tambem;
+- e estavel durante toda a vida da conversa.
+
+Com isso nao existe tabela de-para entre "id do nosso lado" e "id do lado do
+Twilio": os dois sao o mesmo, e `Conversa.conversa_id` carrega o valor do
+Twilio direto. O preco e que o `core/` guarda uma string cujo formato vem de
+um fornecedor — mas ele a trata como identificador opaco, nunca a interpreta,
+entao trocar de canal depois e trocar o que se coloca ali, sem mudar regra
+nenhuma.
+
+Endpoint confirmado na documentacao oficial:
+https://www.twilio.com/docs/conversations/api/conversation-message-resource
 """
+
+from twilio.rest import Client
+
+AUTOR_AGENTE_PADRAO = "ia"
+"""Valor do campo `Author` nas mensagens que este agente posta.
+
+Serve pra duas coisas. Na conversa, identifica quem falou. E, mais
+importante, e o que o webhook usa pra ignorar as proprias mensagens: o
+Twilio dispara `onMessageAdded` tambem quando *nos* postamos, e sem esse
+filtro o agente responderia a si mesmo em laco (ver `webhook.py`).
+"""
+
+LIMITE_CARACTERES_TWILIO = 1600
+"""Tamanho maximo de `Body` aceito pela API de mensagens do Twilio."""
+
+
+class TACCanal:
+    """Entrega mensagens ao cliente por uma Conversation do Twilio.
+
+    Como os outros adapters, recebe a configuracao pronta pelo construtor e
+    nunca le `os.environ` — quem traduz ambiente em configuracao e o
+    `main.py`.
+
+    Nao herda de `core.ports.Canal`: satisfaz a porta por ter o metodo com a
+    forma certa, que e o que `Protocol` verifica.
+    """
+
+    def __init__(
+        self,
+        account_sid: str,
+        auth_token: str,
+        autor_agente: str = AUTOR_AGENTE_PADRAO,
+    ) -> None:
+        self.account_sid = account_sid
+        self.autor_agente = autor_agente
+        self._cliente = Client(account_sid, auth_token)
+
+    def enviar_mensagem(self, conversa_id: str, texto: str) -> None:
+        """Posta `texto` na Conversation `conversa_id`.
+
+        Deixamos qualquer erro do Twilio subir, ao contrario do que o
+        `OllamaProvedorLLM` faz com falha de rede. A diferenca e o que da pra
+        fazer a respeito: quando o LLM falha, ainda existe um plano B util
+        (escalar pro humano). Quando o *canal* falha, nao ha plano B — e por
+        ele que qualquer resposta sairia, inclusive um aviso de erro.
+        Engolir a excecao aqui so transformaria "a mensagem nao chegou" em
+        "a mensagem nao chegou e ninguem ficou sabendo".
+        """
+        self._cliente.conversations.v1.conversations(conversa_id).messages.create(
+            author=self.autor_agente,
+            body=texto[:LIMITE_CARACTERES_TWILIO],
+        )

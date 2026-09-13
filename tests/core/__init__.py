@@ -8,7 +8,5 @@ arquivo, nenhum Docker.
 
     test_conversa.py  Mensagem, Conversa e suas transicoes de estado
     test_triagem.py   as regras de decisao do TriagemService
-
-TODO(Fase 2): cobrir `processar_mensagem_recebida` ponta a ponta com
-adapters falsos.
+    test_fluxo.py     processar_mensagem_recebida ponta a ponta, com fakes
 """

@@ -7,10 +7,10 @@ O quê e por quê estão no [spec.md](spec.md); a arquitetura técnica, no
 [plan.md](plan.md); as fases e critérios de aceite, no [tasks.md](tasks.md);
 as convenções de trabalho, no [CLAUDE.md](CLAUDE.md).
 
-> **Status:** Fases 0 a 3.1 mescladas na `dev` (núcleo de decisão, portas,
-> fluxo completo, LLM local e escalonamento estruturado); Fase 4 (RAG) em
-> revisão. Ainda não há canal real — o agente não fala com o WhatsApp até a
-> Fase 5. Ver `tasks.md` pro detalhe de cada fase.
+> **Status:** Fases 0 a 4 mescladas na `dev`; Fase 5 (canal WhatsApp) em
+> revisão. O handoff para atendimento humano só existe a partir da Fase 6 —
+> até lá, um escalonamento é registrado no log em vez de virar Task no
+> Flex. Ver `tasks.md` pro detalhe de cada fase.
 
 ## Requisitos
 
@@ -73,5 +73,35 @@ um Ollama rodando localmente ou sem nenhum modelo baixado.
 uv run python main.py
 ```
 
-O `main.py` é o composition root e ainda não faz nada — o servidor sobe a
-partir da Fase 5.
+Sobe o webhook em `http://localhost:5000`. O `main.py` é o composition root:
+é o único lugar que lê variáveis de ambiente e escolhe quais adapters usar.
+
+### Ligando ao WhatsApp
+
+O Twilio precisa alcançar o webhook, então numa máquina local é preciso
+expor a porta:
+
+1. **Túnel**: `ngrok http 5000` — anote a URL `https://...` gerada.
+2. **Sandbox do WhatsApp**: no console do Twilio, em *Messaging → Try it
+   out → Send a WhatsApp message*, siga as instruções para parear seu
+   número com o sandbox (enviar `join <duas-palavras>` para o número do
+   sandbox).
+3. **Webhook**: no Conversation Service usado pelo sandbox, configure o
+   webhook `onMessageAdded` para
+   `https://<seu-túnel>/webhooks/twilio/mensagem`, método `POST`.
+4. Mande uma mensagem pelo WhatsApp para o número do sandbox. Uma pergunta
+   coberta pela base (`qual o horário de atendimento?`) deve voltar
+   respondida; uma que a base não cobre (`qual a política de reembolso?`)
+   deve escalar — e o escalonamento aparece no log do servidor até a Fase 6
+   existir.
+
+A validação de assinatura (`X-Twilio-Signature`) fica sempre ligada em
+produção. Se as requisições estiverem voltando `403`, quase sempre é a URL
+que o Flask enxerga diferindo da que o Twilio chamou — confira se o túnel
+está repassando os cabeçalhos `X-Forwarded-Proto` e `X-Forwarded-Host`.
+
+> **Limitação conhecida:** as conversas ficam num dicionário em memória.
+> Reiniciar o processo apaga as conversas em andamento, e rodar com mais de
+> um worker faria a mesma conversa alternar entre históricos diferentes.
+> É deliberado para a POC — ver o docstring de
+> `adapters/channel/webhook.py`.

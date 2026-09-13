@@ -20,9 +20,30 @@ muda — so o adapter escolhido no `main.py`.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from core.conversa import Conversa, Mensagem
+
+
+@dataclass(frozen=True)
+class RespostaLLM:
+    """O que a IA devolve: o texto, e se ela acha que precisa de ajuda.
+
+    Sao duas informacoes independentes, e manter as duas separadas e o
+    ponto. Ja tentamos embutir o pedido de escalonamento dentro do proprio
+    texto, como um marcador combinado — e o modelo corrompia o marcador
+    (`[NESCALAR]`, `[NAO SEGUIR]`), fazendo o pedido se perder e o texto
+    corrompido ir pro cliente. Um campo booleano nao tem como ser digitado
+    errado.
+
+    `texto` e o que iria pro cliente. Quando `deve_escalar` e verdadeiro
+    ele geralmente e descartado — o que a IA rascunhou sem ter a informacao
+    nao serve nem pro cliente nem pro atendente.
+    """
+
+    texto: str
+    deve_escalar: bool
 
 
 class ProvedorLLM(Protocol):
@@ -30,18 +51,18 @@ class ProvedorLLM(Protocol):
 
     def gerar_resposta(
         self, mensagens: Sequence[Mensagem], trechos_contexto: list[str]
-    ) -> str:
+    ) -> RespostaLLM:
         """Gera a proxima resposta da IA.
 
         Recebe o historico da conversa (a ultima mensagem e a pergunta que
-        precisa ser respondida) e os trechos de apoio ja recuperados. Devolve
-        texto puro, do jeito que iria pro cliente.
+        precisa ser respondida) e os trechos de apoio ja recuperados.
 
-        A implementacao decide sozinha como montar o prompt e que modelo
-        usar. O nucleo so espera duas coisas: que a resposta considere o
-        historico, e que ela comece com o marcador de escalonamento quando o
-        modelo nao souber responder — e o unico canal que ele tem pra pedir
-        ajuda, ja que o retorno e uma string.
+        Devolve uma `RespostaLLM`: o texto pro cliente e, em campo separado,
+        se o modelo se considera incapaz de responder com o que recebeu. A
+        implementacao decide sozinha como montar o prompt, que modelo usar e
+        como arrancar dele uma resposta nesse formato — o nucleo so espera
+        que o campo `deve_escalar` seja confiavel, porque e nele que a
+        triagem manda a conversa pra um humano.
         """
         ...
 

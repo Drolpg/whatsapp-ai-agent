@@ -46,23 +46,110 @@ MODELO_EMBEDDINGS_PADRAO = "nomic-embed-text"
 DISTANCIA_MAXIMA_PADRAO = 0.65
 """Distancia maxima pra um trecho ser considerado relevante (menor = melhor).
 
-Escolhido a partir dos scores medidos com o acervo de teste e as perguntas
-do benchmark da Fase 3.1:
+COMO ESTE NUMERO FOI ESCOLHIDO
+Contra 20 perguntas (12 que o acervo responde, 8 que nao), medidas sobre o
+indice que `scripts/ingerir_documentos.py` produz de fato. As duas partes
+dessa frase foram erradas antes e custaram um bug:
 
-    a loja abre no domingo?          0.47   coberto
-    qual o horario de atendimento?   0.54   coberto
-    -------------------------------------- fronteira
-    quanto custa o frete pra Manaus? 0.75   nao coberto
-    qual a politica de reembolso?    0.94   nao coberto
-    qual a capital da Mongolia?      1.01   nao coberto
+1. a primeira calibragem usou 5 perguntas, poucas demais pra distinguir
+   sorte de separacao real;
+2. e mediu sobre trechos escritos a mao, de uma frase, enquanto a ingestao
+   gerava paragrafos inteiros — chunk maior fica mais distante de uma
+   pergunta curta, e "qual o horario de atendimento?" acabava barrado
+   apesar de estar na base.
 
-0.65 fica no meio do vao entre 0.54 e 0.75, que e a maior folga disponivel.
-E um valor calibrado pra ESTE acervo e ESTE modelo de embeddings: mudar
-qualquer um dos dois pede remedir. Sobrescrevivel no construtor.
+Vale registrar tambem o *que* se mede. A calibragem seguinte ainda olhava so
+"passou do limiar?", e deixou escapar o caso em que passa o trecho ERRADO:
+"onde fica a loja?" trazia "Retirada na loja. Passado esse prazo, o pedido
+volta para o estoque", porque o titulo da secao continha a palavra "loja".
+Um trecho errado e pior que nenhum — o modelo recebe contexto plausivel e
+responde com confianca a partir dele. A medicao boa e "o trecho certo veio?",
+nao "veio alguma coisa?".
+
+O QUE 0.65 ENTREGA, MEDIDO
+     9 das 12 cobertas trazem o trecho CERTO
+     1 traz o trecho errado ("como faco pra falar por e-mail?" cai no
+       paragrafo de acompanhamento de pedido, que menciona e-mail)
+     2 sao barradas e escalam a toa (ver abaixo)
+     8 das 8 descobertas param aqui, sem gastar chamada de LLM
+
+A FRONTEIRA, MEDIDA
+    0.6372  coberta   a loja abre no domingo?      <- ultima que passa
+    ------------------------------------------------ 0.65
+    0.6640  coberta   onde fica a loja?            <- barrada
+    0.6722  FORA      voces tem loja em Curitiba?
+    0.6912  FORA      qual o CNPJ da empresa?
+    0.7527  coberta   voces abrem no sabado?       <- barrada
+
+A margem e de 0.035, o maior vao disponivel. Repare que "voces abrem no
+sabado?" fica a 0.7527, mais longe que quatro perguntas que o acervo nem
+cobre: o paragrafo de horarios e dominado por "segunda a sexta", e a frase
+sobre sabado pesa pouco nele. E o preco de manter o paragrafo inteiro — que
+ainda assim compensa (ver `trechos_de_markdown`).
+
+POR QUE NAO AFROUXAR PRA 0.68 E GANHAR AS DUAS BARRADAS
+Porque em 0.68 entram junto "voces tem loja em Curitiba?" e "qual o CNPJ da
+empresa?", que o acervo nao responde. Ai a decisao volta a depender do
+`deve_escalar` do modelo — que na medicao da Fase 3.1 errou com frequencia.
+Preferimos a falha segura: uma pergunta sobre sabado indo pro humano a toa
+custa menos que um CNPJ inventado chegando ao cliente. E o mesmo criterio
+que motivou as Fases 3.1 e 4.
+
+Calibrado pra ESTE acervo e ESTE modelo de embeddings: mudar qualquer um dos
+dois pede remedir. Sobrescrevivel no construtor.
 """
 
 TRECHOS_POR_BUSCA_PADRAO = 3
 """Quantos trechos no maximo entram no prompt, antes de aplicar o limiar."""
+
+PREFIXO_DE_SECAO = "{secao}. {texto}"
+"""Como o titulo da secao entra no trecho indexado.
+
+O titulo carrega o assunto que o texto muitas vezes nao repete: o paragrafo
+sob "## Horario de funcionamento" fala em "segunda a sexta" e "9h as 18h",
+mas nunca escreve "horario de atendimento". Sem o titulo, a pergunta obvia
+do cliente nao encontra o trecho que a responde — foi o que aconteceu.
+Manter o titulo reduziu os conflitos de fronteira de 9 pra 4 na medicao.
+"""
+
+
+def trechos_de_markdown(pasta: str | Path) -> list[str]:
+    """Le os `.md` da pasta e devolve os trechos prontos pra indexar.
+
+    Um paragrafo por trecho, prefixado pelo titulo da secao a que pertence.
+    As duas decisoes foram medidas, nao chutadas.
+
+    O PARAGRAFO INTEIRO, E NAO UMA FRASE POR TRECHO
+    Tentamos quebrar por frase, na intuicao de que trechos curtos casariam
+    melhor com perguntas curtas. Medido, e pior: as tres frases sob
+    "## Horario de funcionamento" (segunda a sexta, sabado, domingo) ficam
+    quase equidistantes de "qual o horario de atendimento?", porque o que
+    casa com a pergunta e o titulo, que todas compartilham. Qual delas vence
+    vira sorteio, e a busca passou a devolver "aos domingos nao abre" pra
+    quem perguntou o horario. Mantendo o paragrafo, as tres informacoes
+    chegam juntas e o modelo responde completo.
+
+    Vive aqui, e nao no script de ingestao, pelo mesmo motivo que
+    `construir_indice`: o que a ingestao produz precisa ser exatamente o que
+    os testes exercitam. Foi justamente essa divergencia que fez o limiar
+    nascer calibrado errado.
+    """
+    trechos: list[str] = []
+    for arquivo in sorted(Path(pasta).glob("*.md")):
+        secao = ""
+        for bloco in arquivo.read_text(encoding="utf-8").split("\n\n"):
+            limpo = " ".join(bloco.split())
+            if not limpo:
+                continue
+            if limpo.startswith("##"):
+                secao = limpo.lstrip("# ").strip()
+            elif limpo.startswith("#"):
+                secao = ""  # titulo do documento: nao rotula secao nenhuma
+            elif secao:
+                trechos.append(PREFIXO_DE_SECAO.format(secao=secao, texto=limpo))
+            else:
+                trechos.append(limpo)
+    return trechos
 
 
 def construir_indice(

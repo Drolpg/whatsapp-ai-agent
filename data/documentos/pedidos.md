@@ -11,7 +11,7 @@ Um pedido pode ser alterado ou cancelado enquanto estiver com o status
 "em separação". Depois que passa para "despachado", não é mais possível
 alterar pelo site.
 
-## Retirada na loja
+## Retirada de pedidos
 
 Pedidos marcados para retirada ficam disponíveis por 7 dias corridos a
 partir do aviso de que estão prontos. Passado esse prazo, o pedido volta

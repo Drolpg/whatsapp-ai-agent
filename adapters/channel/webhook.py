@@ -15,6 +15,19 @@ precisamos (form-encoded, que e o formato que o Twilio manda, e um cliente
 de teste embutido) sem trazer Pydantic nem ASGI junto. Se um dia o
 `ProvedorLLM` virar streaming, vale reabrir a conversa.
 
+LIMITACAO CONHECIDA: A PRIMEIRA MENSAGEM DE UM CLIENTE NOVO
+`onMessageAdded` nao dispara durante a autocreation — quando o Twilio cria a
+Conversation por causa de uma mensagem que chegou, o evento da propria
+mensagem que a criou nao e enviado. Com um numero WhatsApp proprio (que usa
+autocreation), a primeira pergunta de um cliente novo cria a conversa e
+*nao* chega aqui: o cliente so seria atendido a partir da segunda mensagem.
+
+Na prova da Fase 5 isso nao apareceu porque a Conversation foi criada a mao,
+que e o caminho obrigatorio com o Sandbox. Tratar esse caso provavelmente
+significa assinar tambem `onConversationAdded` e ler a primeira mensagem
+pela API — ainda nao feito.
+Ver https://www.twilio.com/docs/conversations/inbound-autocreation
+
 LIMITACAO CONHECIDA: ESTADO EM MEMORIA
 As `Conversa` vivem num dicionario no processo (`ConversasEmMemoria`). Isso
 e deliberado pra POC e tem consequencias reais:

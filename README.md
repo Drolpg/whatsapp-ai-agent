@@ -81,19 +81,49 @@ Sobe o webhook em `http://localhost:5000`. O `main.py` é o composition root:
 O Twilio precisa alcançar o webhook, então numa máquina local é preciso
 expor a porta:
 
-1. **Túnel**: `ngrok http 5000` — anote a URL `https://...` gerada.
-2. **Sandbox do WhatsApp**: no console do Twilio, em *Messaging → Try it
-   out → Send a WhatsApp message*, siga as instruções para parear seu
-   número com o sandbox (enviar `join <duas-palavras>` para o número do
-   sandbox).
-3. **Webhook**: no Conversation Service usado pelo sandbox, configure o
-   webhook `onMessageAdded` para
-   `https://<seu-túnel>/webhooks/twilio/mensagem`, método `POST`.
-4. Mande uma mensagem pelo WhatsApp para o número do sandbox. Uma pergunta
-   coberta pela base (`qual o horário de atendimento?`) deve voltar
-   respondida; uma que a base não cobre (`qual a política de reembolso?`)
-   deve escalar — e o escalonamento aparece no log do servidor até a Fase 6
-   existir.
+1. **Túnel**: `cloudflared tunnel --url http://localhost:5000` (ou
+   `ngrok http 5000`) — anote a URL `https://...` gerada.
+2. **Webhook do Conversation Service**: aponte o service do POC para o
+   túnel. O filtro `onMessageAdded` é o que importa:
+
+   ```bash
+   curl -X POST "https://conversations.twilio.com/v1/Services/$SERVICE_SID/Configuration/Webhooks" \
+     -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
+     -d "Filters=onMessageAdded" \
+     -d "PostWebhookUrl=https://<seu-túnel>/webhooks/twilio/mensagem" \
+     -d "Method=POST"
+   ```
+
+3. **Pareie seu número com o sandbox**: no console, em *Messaging → Try it
+   out → Send a WhatsApp message*, pegue o código e mande
+   `join <duas-palavras>` do seu WhatsApp para `+1 415 523 8886`.
+4. **Crie a Conversation e o participante** — este passo é obrigatório com
+   o sandbox, ver a nota abaixo:
+
+   ```python
+   conv = client.conversations.v1.services(SERVICE_SID).conversations.create()
+   client.conversations.v1.services(SERVICE_SID).conversations(conv.sid).participants.create(
+       messaging_binding_address="whatsapp:+55SEUNUMERO",
+       messaging_binding_proxy_address="whatsapp:+14155238886",
+   )
+   ```
+
+5. Mande uma mensagem pelo WhatsApp. Uma pergunta coberta pela base
+   (`qual o horário de atendimento?`) deve voltar respondida; uma que a
+   base não cobre (`qual a política de reembolso?`) deve escalar — e o
+   escalonamento aparece no log do servidor até a Fase 6 existir.
+
+> **O sandbox não suporta autocreation.** Tentar registrar
+> `whatsapp:+14155238886` via *Address Configuration* devolve `409
+> Conflict`: o endereço precisa pertencer à sua conta, e o número do
+> sandbox é da Twilio. Por isso o passo 4 — com um número WhatsApp próprio,
+> a autocreation cuidaria disso.
+> Ver [Trying Out WhatsApp with Conversations](https://www.twilio.com/docs/conversations/use-twilio-sandbox-for-whatsapp).
+
+> **Mensagem criada pela API não dispara webhook** a menos que a chamada
+> envie `X-Twilio-Webhook-Enabled: true`. Vale para testes que simulam uma
+> mensagem do cliente pela API — sem o cabeçalho, o webhook simplesmente
+> não é chamado e parece que a integração está quebrada.
 
 A validação de assinatura (`X-Twilio-Signature`) fica sempre ligada em
 produção. Se as requisições estiverem voltando `403`, quase sempre é a URL

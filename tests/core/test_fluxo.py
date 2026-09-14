@@ -305,6 +305,72 @@ class TestQuandoABaseNaoTemNadaRelevante:
         assert canal.enviadas == []
 
 
+class TestQuandoAConversaJaSaiuDasMaosDaIA:
+    """Depois do handoff, quem conduz a conversa e o humano.
+
+    Sem esta guarda acontecem duas coisas, as duas vistas na prova ponta a
+    ponta da Fase 5: a IA continua respondendo por cima do atendente, e uma
+    segunda decisao de escalar estoura `ValueError` em `Conversa.escalar`,
+    que vira HTTP 500 no webhook — e o Twilio reenvia em 500, entao o erro
+    se repete.
+    """
+
+    def _conversa_escalada(self) -> Conversa:
+        conversa = Conversa(conversa_id="c1")
+        conversa.escalar(motivo="a IA sinalizou que nao sabe resolver")
+        return conversa
+
+    def test_nao_chama_o_llm(self):
+        _, _, llm, _, _ = _processar(self._conversa_escalada(), "irrelevante")
+
+        assert llm.mensagens_recebidas == []
+
+    def test_nao_responde_ao_cliente(self):
+        _, _, _, canal, _ = _processar(self._conversa_escalada(), "irrelevante")
+
+        assert canal.enviadas == []
+
+    def test_nao_escala_de_novo(self):
+        """Escalar duas vezes criaria Task duplicada e estourava ValueError."""
+        _, _, _, _, handoff = _processar(self._conversa_escalada(), "irrelevante")
+
+        assert handoff.escalonamentos == []
+
+    def test_devolve_decisao_de_aguardar_o_humano(self):
+        resultado, *_ = _processar(self._conversa_escalada(), "irrelevante")
+
+        assert resultado.decisao is Decisao.AGUARDANDO_HUMANO
+
+    def test_a_mensagem_do_cliente_entra_no_historico_para_o_atendente(self):
+        conversa = self._conversa_escalada()
+
+        _processar(conversa, "irrelevante", texto_cliente="e ai, alguem me ajuda?")
+
+        assert conversa.mensagens == (
+            Mensagem(Autor.CLIENTE, "e ai, alguem me ajuda?", AGORA),
+        )
+
+    def test_a_conversa_continua_escalada(self):
+        conversa = self._conversa_escalada()
+
+        _processar(conversa, "irrelevante")
+
+        assert conversa.status is StatusConversa.ESCALADA
+
+    def test_conversa_encerrada_nao_levanta_nem_registra(self):
+        """`registrar_mensagem` recusaria uma conversa ENCERRADA."""
+        conversa = Conversa(conversa_id="c1")
+        conversa.encerrar()
+
+        resultado, _, llm, canal, handoff = _processar(conversa, "irrelevante")
+
+        assert resultado.decisao is Decisao.AGUARDANDO_HUMANO
+        assert conversa.mensagens == ()
+        assert llm.mensagens_recebidas == []
+        assert canal.enviadas == []
+        assert handoff.escalonamentos == []
+
+
 class TestQuandoEstouraOLimiteDeTentativas:
     def test_a_quarta_pergunta_escala_com_limite_de_tres(self):
         conversa = _conversa_com_respostas_da_ia(3)

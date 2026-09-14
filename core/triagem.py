@@ -11,12 +11,14 @@ um `ProvedorLLM` la em `adapters/`. Ele so decide o que fazer com ela.
 
 `processar_mensagem_recebida` e a funcao que costura o fluxo inteiro:
 
-    1. registra a mensagem do cliente na `Conversa`;
-    2. busca trechos relevantes na `BaseConhecimento` (RAG);
-    3. se nao veio nenhum trecho, escala na hora — sem chamar o LLM;
-    4. pede uma resposta candidata ao `ProvedorLLM`;
-    5. entrega essa candidata ao `TriagemService`, que decide;
-    6. conforme a decisao, ou responde pelo `Canal` ou aciona o
+    1. se a conversa ja saiu das maos da IA (ESCALADA ou ENCERRADA), para
+       por aqui — quem conduz dali em diante e o humano;
+    2. registra a mensagem do cliente na `Conversa`;
+    3. busca trechos relevantes na `BaseConhecimento` (RAG);
+    4. se nao veio nenhum trecho, escala na hora — sem chamar o LLM;
+    5. pede uma resposta candidata ao `ProvedorLLM`;
+    6. entrega essa candidata ao `TriagemService`, que decide;
+    7. conforme a decisao, ou responde pelo `Canal` ou aciona o
        `GatewayHandoff`.
 
 Os passos 2, 3 e 5 falam com as interfaces de `ports.py`, nunca com Ollama,
@@ -29,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-from core.conversa import Autor, Conversa, Mensagem
+from core.conversa import Autor, Conversa, Mensagem, StatusConversa
 from core.ports import (
     BaseConhecimento,
     Canal,
@@ -49,6 +51,26 @@ disse que o acervo nao cobre a pergunta, nao ha o que a IA possa responder
 sem inventar, entao a conversa vai direto pro humano.
 """
 
+MOTIVO_JA_ESCALADA = "a conversa ja esta com um atendente humano"
+"""Motivo quando chega mensagem numa conversa que ja foi escalada.
+
+Depois do handoff quem conduz e o humano — e o que o docstring de
+`GatewayHandoff.escalar` sempre prometeu ("a IA nao responde mais nessa
+conversa"). Sem essa guarda aconteciam duas coisas, as duas observadas na
+prova ponta a ponta da Fase 5: a IA respondia por cima do atendente, e uma
+segunda decisao de escalar estourava `ValueError` em `Conversa.escalar` —
+que no webhook virava HTTP 500, e o Twilio reenvia em 500.
+"""
+
+MOTIVO_CONVERSA_ENCERRADA = "a conversa ja foi encerrada"
+"""Motivo quando chega mensagem numa conversa encerrada.
+
+Aqui nem se registra a mensagem: `Conversa.registrar_mensagem` recusa uma
+conversa ENCERRADA, e com razao. Reabrir atendimento encerrado e uma decisao
+de produto que ninguem tomou ainda; por ora a mensagem e ignorada sem
+quebrar o processo.
+"""
+
 LIMITE_TENTATIVAS_PADRAO = 3
 """Quantas respostas da IA sem resolver antes de chamar um humano.
 
@@ -59,10 +81,16 @@ tempo. E ajustavel por conversa via `TriagemService(limite_tentativas=...)`.
 
 
 class Decisao(Enum):
-    """O que fazer com a resposta candidata da IA."""
+    """O que fazer com a mensagem que acabou de chegar.
+
+    `RESOLVER` e `ESCALAR` sao decisoes sobre a resposta candidata da IA.
+    `AGUARDANDO_HUMANO` e diferente: nao ha resposta candidata nenhuma
+    porque a IA nem foi consultada — a conversa ja saiu das maos dela.
+    """
 
     RESOLVER = "RESOLVER"
     ESCALAR = "ESCALAR"
+    AGUARDANDO_HUMANO = "AGUARDANDO_HUMANO"
 
 
 @dataclass(frozen=True)
@@ -86,6 +114,10 @@ class ResultadoTriagem:
     @classmethod
     def escalar(cls, motivo: str) -> "ResultadoTriagem":
         return cls(decisao=Decisao.ESCALAR, motivo=motivo)
+
+    @classmethod
+    def aguardando_humano(cls, motivo: str) -> "ResultadoTriagem":
+        return cls(decisao=Decisao.AGUARDANDO_HUMANO, motivo=motivo)
 
 
 class TriagemService:
@@ -168,6 +200,14 @@ def processar_mensagem_recebida(
     Devolve o `ResultadoTriagem` pra quem chamou poder inspecionar o que
     aconteceu sem ter que deduzir a partir do estado da conversa.
     """
+    if conversa.status is StatusConversa.ENCERRADA:
+        return ResultadoTriagem.aguardando_humano(MOTIVO_CONVERSA_ENCERRADA)
+
+    if conversa.status is StatusConversa.ESCALADA:
+        # A mensagem entra no historico pro atendente ler, e para por aqui.
+        conversa.registrar_mensagem(Mensagem(Autor.CLIENTE, texto_cliente, timestamp))
+        return ResultadoTriagem.aguardando_humano(MOTIVO_JA_ESCALADA)
+
     conversa.registrar_mensagem(Mensagem(Autor.CLIENTE, texto_cliente, timestamp))
 
     trechos = base_conhecimento.buscar_trechos_relevantes(texto_cliente)

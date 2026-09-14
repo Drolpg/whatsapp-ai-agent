@@ -28,6 +28,8 @@ maquina local, exponha a porta (ngrok http 5000) e aponte o webhook
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from adapters.channel.tac_channel import AUTOR_AGENTE_PADRAO, TACCanal
 from adapters.channel.webhook import criar_app
 from adapters.knowledge.faiss_repository import FaissBaseConhecimento
@@ -61,7 +63,14 @@ def _obrigatoria(nome: str) -> str:
 
 
 def montar_app():
-    """Le o ambiente, instancia os adapters e devolve o app pronto."""
+    """Le o ambiente, instancia os adapters e devolve o app pronto.
+
+    O `.env` e carregado aqui, e nao no topo do modulo, pra que importar
+    `main` num teste nao tenha efeito colateral no ambiente do processo.
+    Variavel ja definida no ambiente ganha do arquivo (`override=False`).
+    """
+    load_dotenv(RAIZ / ".env", override=False)
+
     base_url_ollama = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     autor_agente = os.environ.get("TWILIO_AUTOR_AGENTE", AUTOR_AGENTE_PADRAO)
     auth_token = _obrigatoria("TWILIO_AUTH_TOKEN")

@@ -2088,6 +2088,7 @@ dependencies = [
     { name = "flask" },
     { name = "langchain-community" },
     { name = "langchain-ollama" },
+    { name = "python-dotenv" },
     { name = "requests" },
     { name = "twilio" },
 ]
@@ -2103,6 +2104,7 @@ requires-dist = [
     { name = "flask", specifier = ">=3.1.3" },
     { name = "langchain-community", specifier = ">=0.4.2" },
     { name = "langchain-ollama", specifier = ">=1.1.0" },
+    { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "twilio", specifier = ">=9.11.1" },
 ]

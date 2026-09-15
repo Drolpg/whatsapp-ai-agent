@@ -12,6 +12,7 @@ from core.conversa import Autor, Conversa, Mensagem, StatusConversa
 from core.ports import RespostaLLM
 from core.triagem import (
     MENSAGEM_DE_ESCALONAMENTO,
+    MENSAGEM_FORA_DO_DOMINIO,
     Decisao,
     TriagemService,
     processar_mensagem_recebida,
@@ -94,16 +95,58 @@ def _processar(
 
 
 def _conversa_com_respostas_da_ia(quantidade: int) -> Conversa:
-    """Conversa onde a IA ja respondeu `quantidade` vezes sem resolver."""
+    """Conversa onde a IA respondeu `quantidade` vezes — com fundamento.
+
+    Estas contam como sucesso, nao como tentativa frustrada: e o que
+    distingue um cliente sendo bem atendido de um que a IA nao consegue
+    ajudar.
+    """
     conversa = Conversa(conversa_id="c1")
     for i in range(quantidade):
         conversa.registrar_mensagem(
             Mensagem(Autor.CLIENTE, f"pergunta {i}", datetime(2026, 9, 13, 10, i * 2))
         )
         conversa.registrar_mensagem(
-            Mensagem(Autor.IA, f"resposta {i}", datetime(2026, 9, 13, 10, i * 2 + 1))
+            Mensagem(Autor.IA, f"resposta util {i}", datetime(2026, 9, 13, 10, i * 2 + 1))
         )
     return conversa
+
+
+def _conversa_com_tentativas_frustradas(quantidade: int) -> Conversa:
+    """Conversa onde a IA ficou `quantidade` vezes seguidas sem ajudar."""
+    conversa = Conversa(conversa_id="c1")
+    for i in range(quantidade):
+        conversa.registrar_mensagem(
+            Mensagem(Autor.CLIENTE, f"pergunta {i}", datetime(2026, 9, 13, 10, i * 2))
+        )
+        conversa.registrar_mensagem(
+            Mensagem(
+                Autor.IA, MENSAGEM_FORA_DO_DOMINIO, datetime(2026, 9, 13, 10, i * 2 + 1)
+            )
+        )
+    return conversa
+
+
+class TestClienteBemAtendidoNaoEscala:
+    """A regressao que o contador antigo causava, travada pelo fluxo inteiro.
+
+    Somando todas as mensagens da IA, quatro perguntas bem respondidas
+    acabavam no humano. Aqui o cenario roda pelo caminho de producao, e nao
+    so pela unidade do TriagemService.
+    """
+
+    def test_seis_perguntas_respondidas_seguem_com_a_ia(self):
+        conversa = Conversa(conversa_id="c1")
+
+        decisoes = []
+        for i in range(6):
+            resultado, *_ = _processar(
+                conversa, f"resposta {i}", texto_cliente=f"pergunta {i}", limite=3
+            )
+            decisoes.append(resultado.decisao)
+
+        assert all(d is Decisao.RESOLVER for d in decisoes), decisoes
+        assert conversa.status is StatusConversa.ATIVA
 
 
 class TestQuandoAIAResolve:
@@ -263,15 +306,8 @@ class TestOClienteEAvisadoAoEscalar:
 
         assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
 
-    def test_avisa_quando_a_base_nao_cobre(self):
-        _, _, _, canal, _ = _processar(
-            Conversa(conversa_id="c1"), "irrelevante", trechos=[]
-        )
-
-        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
-
     def test_avisa_quando_estoura_o_limite_de_tentativas(self):
-        conversa = _conversa_com_respostas_da_ia(3)
+        conversa = _conversa_com_tentativas_frustradas(3)
 
         _, _, _, canal, _ = _processar(conversa, "mais uma tentativa", limite=3)
 
@@ -306,69 +342,83 @@ class TestOClienteEAvisadoAoEscalar:
 
 
 class TestQuandoABaseNaoTemNadaRelevante:
-    """Lista vazia da base encerra o assunto antes de o LLM entrar em cena.
+    """Fora do dominio o agente se apresenta, em vez de escalar calado.
 
-    E a correcao estrutural da Fase 4: a pergunta "o acervo cobre isso?" e
-    respondida pela recuperacao, que tem um score pra medir, e nao pelo
-    modelo, que no benchmark da Fase 3.1 nao soube discriminar.
+    Escalar na primeira mensagem fora do escopo mandava pro humano qualquer
+    "oi" ou pergunta de outro assunto — e, antes do aviso de transferencia,
+    em silencio absoluto. Agora o agente diz o que sabe responder e da ao
+    cliente a chance de reformular.
+
+    Isso passa pela triagem como qualquer outra resposta, entao o limite de
+    tentativas continua valendo: quem insiste fora do escopo acaba no humano
+    de qualquer forma.
     """
 
     def test_o_llm_nao_e_chamado(self):
+        """Sem acervo nao ha o que fundamentar — perguntar ao modelo so
+        convida a alucinacao (ver Fase 3.1)."""
         _, _, llm, _, _ = _processar(
             Conversa(conversa_id="c1"), "resposta que nunca sera gerada", trechos=[]
         )
 
         assert llm.mensagens_recebidas == []
 
-    def test_o_handoff_e_acionado(self):
-        _, _, _, _, handoff = _processar(
-            Conversa(conversa_id="c1"), "irrelevante", trechos=[]
-        )
-
-        assert len(handoff.escalonamentos) == 1
-
-    def test_devolve_decisao_de_escalar(self):
-        resultado, *_ = _processar(Conversa(conversa_id="c1"), "irrelevante", trechos=[])
-
-        assert resultado.decisao is Decisao.ESCALAR
-
-    def test_o_motivo_aponta_a_base_de_conhecimento(self):
-        resultado, *_ = _processar(Conversa(conversa_id="c1"), "irrelevante", trechos=[])
-
-        assert "base de conhecimento" in resultado.motivo.lower()
-
-    def test_a_conversa_fica_escalada(self):
-        conversa = Conversa(conversa_id="c1")
-
-        _processar(conversa, "irrelevante", trechos=[])
-
-        assert conversa.status is StatusConversa.ESCALADA
-
-    def test_o_cliente_recebe_o_aviso_de_transferencia(self):
+    def test_o_cliente_recebe_a_apresentacao_do_dominio(self):
         _, _, _, canal, _ = _processar(
             Conversa(conversa_id="c1"), "irrelevante", trechos=[]
         )
 
-        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
+        assert canal.enviadas == [("c1", MENSAGEM_FORA_DO_DOMINIO)]
 
-    def test_a_pergunta_do_cliente_continua_no_historico(self):
+    def test_nao_escala_na_primeira_vez(self):
+        resultado, _, _, _, handoff = _processar(
+            Conversa(conversa_id="c1"), "irrelevante", trechos=[]
+        )
+
+        assert resultado.decisao is Decisao.RESOLVER
+        assert handoff.escalonamentos == []
+
+    def test_a_conversa_continua_ativa(self):
         conversa = Conversa(conversa_id="c1")
 
-        _processar(conversa, "irrelevante", texto_cliente="e sobre outra coisa", trechos=[])
+        _processar(conversa, "irrelevante", trechos=[])
+
+        assert conversa.status is StatusConversa.ATIVA
+
+    def test_a_apresentacao_entra_no_historico(self):
+        """Diferente do aviso de transferencia: isto e uma resposta da IA."""
+        conversa = Conversa(conversa_id="c1")
+
+        _processar(conversa, "irrelevante", texto_cliente="ola", trechos=[])
 
         assert conversa.mensagens == (
-            Mensagem(Autor.CLIENTE, "e sobre outra coisa", AGORA),
+            Mensagem(Autor.CLIENTE, "ola", AGORA),
+            Mensagem(Autor.IA, MENSAGEM_FORA_DO_DOMINIO, AGORA),
         )
 
-    def test_escala_mesmo_com_o_llm_dizendo_que_resolveria(self):
-        """Nao adianta o modelo achar que sabe: sem acervo, nao ha o que citar."""
-        resultado, _, llm, canal, _ = _processar(
-            Conversa(conversa_id="c1"), "Sei a resposta!", deve_escalar=False, trechos=[]
-        )
+    def test_insistir_fora_do_escopo_acaba_escalando(self):
+        """O limite de tentativas continua sendo a rede de seguranca."""
+        conversa = Conversa(conversa_id="c1")
 
-        assert resultado.decisao is Decisao.ESCALAR
-        assert llm.mensagens_recebidas == []
-        assert all("Sei a resposta!" not in t for _, t in canal.enviadas)
+        decisoes = []
+        for _ in range(6):
+            resultado, _, _, _, _ = _processar(conversa, "x", trechos=[], limite=3)
+            decisoes.append(resultado.decisao)
+            if conversa.status is not StatusConversa.ATIVA:
+                break
+
+        assert decisoes[0] is Decisao.RESOLVER, "a primeira deve orientar"
+        assert decisoes[-1] is Decisao.ESCALAR, "insistir deve acabar no humano"
+        assert conversa.status is StatusConversa.ESCALADA
+        assert len(decisoes) == 4, f"esperava escalar na 4a, foi na {len(decisoes)}a"
+
+    def test_quando_finalmente_escala_o_cliente_e_avisado(self):
+        conversa = _conversa_com_tentativas_frustradas(3)
+
+        _, _, _, canal, handoff = _processar(conversa, "x", trechos=[], limite=3)
+
+        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
+        assert len(handoff.escalonamentos) == 1
 
 
 class TestQuandoAConversaJaSaiuDasMaosDaIA:
@@ -439,14 +489,14 @@ class TestQuandoAConversaJaSaiuDasMaosDaIA:
 
 class TestQuandoEstouraOLimiteDeTentativas:
     def test_a_quarta_pergunta_escala_com_limite_de_tres(self):
-        conversa = _conversa_com_respostas_da_ia(3)
+        conversa = _conversa_com_tentativas_frustradas(3)
 
         resultado, *_ = _processar(conversa, "Tente reiniciar o app.", limite=3)
 
         assert resultado.decisao is Decisao.ESCALAR
 
     def test_a_terceira_pergunta_ainda_e_respondida_com_limite_de_tres(self):
-        conversa = _conversa_com_respostas_da_ia(2)
+        conversa = _conversa_com_tentativas_frustradas(2)
 
         resultado, _, _, canal, _ = _processar(
             conversa, "Tente reiniciar o app.", limite=3
@@ -456,14 +506,14 @@ class TestQuandoEstouraOLimiteDeTentativas:
         assert canal.enviadas == [("c1", "Tente reiniciar o app.")]
 
     def test_o_motivo_cita_as_tentativas_e_nao_o_pedido_da_ia(self):
-        conversa = _conversa_com_respostas_da_ia(3)
+        conversa = _conversa_com_tentativas_frustradas(3)
 
         resultado, *_ = _processar(conversa, "Tente reiniciar o app.", limite=3)
 
         assert "3" in resultado.motivo
 
     def test_o_cliente_nao_recebe_a_resposta_fraca(self):
-        conversa = _conversa_com_respostas_da_ia(3)
+        conversa = _conversa_com_tentativas_frustradas(3)
 
         _, _, _, canal, _ = _processar(conversa, "Tente reiniciar o app.", limite=3)
 

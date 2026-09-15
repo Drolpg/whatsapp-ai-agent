@@ -15,7 +15,8 @@ um `ProvedorLLM` la em `adapters/`. Ele so decide o que fazer com ela.
        por aqui — quem conduz dali em diante e o humano;
     2. registra a mensagem do cliente na `Conversa`;
     3. busca trechos relevantes na `BaseConhecimento` (RAG);
-    4. se nao veio nenhum trecho, escala na hora — sem chamar o LLM;
+    4. se nao veio nenhum trecho, responde com a apresentacao do escopo,
+       sem chamar o LLM;
     5. pede uma resposta candidata ao `ProvedorLLM`;
     6. entrega essa candidata ao `TriagemService`, que decide;
     7. conforme a decisao, ou responde pelo `Canal` ou aciona o
@@ -40,15 +41,28 @@ from core.ports import (
     RespostaLLM,
 )
 
-MOTIVO_SEM_CONTEXTO = (
-    "a base de conhecimento nao tem nada relevante pra esta pergunta"
+MENSAGEM_FORA_DO_DOMINIO = (
+    "Posso ajudar com horario de funcionamento, endereco da loja, telefone e "
+    "e-mail de contato, e com pedidos — acompanhar, alterar, cancelar ou "
+    "retirar. E sobre algum desses assuntos?"
 )
-"""Motivo do escalonamento quando a recuperacao volta de maos vazias.
+"""O que o agente responde quando a recuperacao volta de maos vazias.
 
-Este caminho nem consulta o LLM. A razao esta na Fase 3.1: pedir ao modelo
-que admita nao saber nao funciona — ele inventa. Quando a recuperacao ja
-disse que o acervo nao cobre a pergunta, nao ha o que a IA possa responder
-sem inventar, entao a conversa vai direto pro humano.
+Antes este caminho escalava direto, e isso mandava pro humano qualquer "oi"
+ou pergunta de outro assunto — na primeira mensagem, sem o cliente entender
+por que. Agora o agente se apresenta e da a chance de reformular.
+
+O texto e fixo, escrito por nos. A tentacao seria pedir ao modelo que
+explicasse o proprio escopo, mas sem acervo pra fundamentar ele inventa (foi
+a licao da Fase 3.1) — e justamente aqui nao ha acervo nenhum.
+
+Repare que isto NAO desliga o escalonamento: a mensagem passa pela triagem
+como qualquer resposta da IA, entao conta como tentativa. Quem insiste fora
+do escopo acaba no atendente humano pelo limite de sempre.
+
+Este texto e conteudo, nao regra — descreve *esta* loja. Se o projeto
+atender mais de um cliente, ele precisa virar configuracao injetada, como
+os adapters ja sao.
 """
 
 MOTIVO_JA_ESCALADA = "a conversa ja esta com um atendente humano"
@@ -86,10 +100,11 @@ um texto fixo, escrito por nos, que nao tem como alucinar.
 """
 
 LIMITE_TENTATIVAS_PADRAO = 3
-"""Quantas respostas da IA sem resolver antes de chamar um humano.
+"""Quantas vezes SEGUIDAS a IA pode falhar antes de chamar um humano.
 
-Tres e um meio-termo: da a IA espaco pra se corrigir depois de um
-mal-entendido, sem deixar o cliente repetindo a mesma pergunta por muito
+Conta apenas fracassos consecutivos: uma resposta fundamentada zera a
+sequencia. Tres e um meio-termo — da a IA espaco pra se corrigir depois de
+um mal-entendido, sem deixar o cliente repetindo a mesma pergunta por muito
 tempo. E ajustavel por conversa via `TriagemService(limite_tentativas=...)`.
 """
 
@@ -140,8 +155,12 @@ class TriagemService:
     Duas regras, nesta ordem:
 
     1. a IA sinalizou que nao sabe resolver (`resposta.deve_escalar`);
-    2. a IA ja tentou `limite_tentativas` vezes nesta conversa e o cliente
-       continua voltando — sinal de que ela nao vai chegar la sozinha.
+    2. a IA ficou `limite_tentativas` vezes SEGUIDAS sem conseguir ajudar —
+       sinal de que ela nao vai chegar la sozinha.
+
+    "Seguidas" e a palavra que importa na regra 2: uma resposta fundamentada
+    zera a contagem. Sem isso, um cliente satisfeito era escalado so por ter
+    feito perguntas demais.
 
     A regra 1 le um campo, nao o texto: o que a IA escreveu nao influencia
     a decisao, e uma resposta que por acaso fale em "escalar" continua
@@ -163,17 +182,45 @@ class TriagemService:
         if resposta.deve_escalar:
             return ResultadoTriagem.escalar("a IA sinalizou que nao sabe resolver")
 
-        tentativas = self._tentativas_da_ia(conversa)
+        tentativas = self._tentativas_seguidas_sem_ajudar(conversa)
         if tentativas >= self.limite_tentativas:
             return ResultadoTriagem.escalar(
-                f"a IA ja respondeu {tentativas} vezes sem resolver "
+                f"a IA ficou {tentativas} vezes seguidas sem conseguir ajudar "
                 f"(limite: {self.limite_tentativas})"
             )
 
         return ResultadoTriagem.resolver(resposta.texto)
 
-    def _tentativas_da_ia(self, conversa: Conversa) -> int:
-        return sum(1 for mensagem in conversa.mensagens if mensagem.autor is Autor.IA)
+    def _tentativas_seguidas_sem_ajudar(self, conversa: Conversa) -> int:
+        """Quantas vezes SEGUIDAS a IA nao conseguiu ajudar, ate agora.
+
+        A versao anterior contava todas as mensagens da IA, sucesso junto com
+        fracasso. O efeito era absurdo: um cliente satisfeito que fizesse
+        quatro perguntas e recebesse quatro respostas certas era transferido
+        pro humano na quarta. O docstring sempre falou em "tentativas sem
+        sucesso" — era a contagem que estava errada.
+
+        O unico sinal de fracasso que existe de verdade e a resposta de fora
+        do dominio: ela e emitida exatamente quando a recuperacao nao achou
+        nada pra fundamentar. Resposta fundamentada zera a sequencia, porque
+        significa que a IA voltou a ajudar.
+
+        A contagem depende de reconhecer `MENSAGEM_FORA_DO_DOMINIO` pelo
+        texto, e esse acoplamento e proposital e testado: as duas coisas
+        moram neste modulo, e um teste quebra se elas se separarem.
+
+        O que isto NAO cobre: uma resposta fundamentada mas errada, que o
+        cliente rejeita. Nao ha sinal pra isso — ninguem pergunta ao cliente
+        se ficou satisfeito. Nesse caso sobra o `deve_escalar` do modelo.
+        """
+        seguidas = 0
+        for mensagem in reversed(conversa.mensagens):
+            if mensagem.autor is not Autor.IA:
+                continue
+            if mensagem.conteudo != MENSAGEM_FORA_DO_DOMINIO:
+                break
+            seguidas += 1
+        return seguidas
 
 
 def processar_mensagem_recebida(
@@ -226,13 +273,17 @@ def processar_mensagem_recebida(
 
     trechos = base_conhecimento.buscar_trechos_relevantes(texto_cliente)
 
-    if not trechos:
-        return _escalar(
-            conversa, ResultadoTriagem.escalar(MOTIVO_SEM_CONTEXTO), canal,
-            gateway_handoff,
+    if trechos:
+        resposta_llm = provedor_llm.gerar_resposta(conversa.mensagens, trechos)
+    else:
+        # Sem acervo nao ha o que fundamentar, entao o modelo nem e
+        # consultado — perguntar a ele sem contexto so convida a alucinacao.
+        # A resposta e a apresentacao do escopo, e ela segue pela triagem
+        # como qualquer outra: conta como tentativa, e insistir fora do
+        # assunto acaba escalando pelo limite de sempre.
+        resposta_llm = RespostaLLM(
+            texto=MENSAGEM_FORA_DO_DOMINIO, deve_escalar=False
         )
-
-    resposta_llm = provedor_llm.gerar_resposta(conversa.mensagens, trechos)
 
     resultado = triagem.decidir(conversa, resposta_llm)
 

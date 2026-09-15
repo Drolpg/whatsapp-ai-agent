@@ -11,23 +11,41 @@ import pytest
 
 from core.conversa import Autor, Conversa, Mensagem
 from core.ports import RespostaLLM
-from core.triagem import Decisao, TriagemService
+from core.triagem import (
+    MENSAGEM_FORA_DO_DOMINIO,
+    Decisao,
+    TriagemService,
+)
 
 
 def _resposta(texto: str = "O horario e das 9h as 18h.", escalar: bool = False) -> RespostaLLM:
     return RespostaLLM(texto=texto, deve_escalar=escalar)
 
 
-def _conversa_com(tentativas_da_ia: int = 0) -> Conversa:
-    """Uma conversa onde a IA ja respondeu `tentativas_da_ia` vezes sem resolver."""
+def _conversa_com(tentativas_da_ia: int = 0, respostas_uteis: int = 0) -> Conversa:
+    """Conversa com `tentativas_da_ia` respostas sem fundamento no fim.
+
+    `respostas_uteis` acrescenta antes delas respostas fundamentadas — que
+    NAO sao tentativas frustradas e nao podem contar pro limite.
+    """
     conversa = Conversa(conversa_id="c1")
+    minuto = 0
+    for i in range(respostas_uteis):
+        conversa.registrar_mensagem(
+            Mensagem(Autor.CLIENTE, f"pergunta boa {i}", datetime(2026, 9, 12, 10, minuto))
+        )
+        conversa.registrar_mensagem(
+            Mensagem(Autor.IA, f"resposta util {i}", datetime(2026, 9, 12, 10, minuto + 1))
+        )
+        minuto += 2
     for i in range(tentativas_da_ia):
         conversa.registrar_mensagem(
-            Mensagem(Autor.CLIENTE, f"pergunta {i}", datetime(2026, 9, 12, 10, i * 2))
+            Mensagem(Autor.CLIENTE, f"pergunta {i}", datetime(2026, 9, 12, 10, minuto))
         )
         conversa.registrar_mensagem(
-            Mensagem(Autor.IA, f"resposta {i}", datetime(2026, 9, 12, 10, i * 2 + 1))
+            Mensagem(Autor.IA, MENSAGEM_FORA_DO_DOMINIO, datetime(2026, 9, 12, 10, minuto + 1))
         )
+        minuto += 2
     return conversa
 
 
@@ -100,6 +118,50 @@ class TestEscaladoPorPedidoExplicitoDaIA:
         resultado = TriagemService().decidir(_conversa_com(), _resposta(escalar=True))
 
         assert resultado.resposta is None
+
+
+class TestRespostasUteisNaoContamComoTentativa:
+    """O defeito que este teste tranca: cliente satisfeito sendo escalado.
+
+    O contador somava TODAS as mensagens da IA, entao quem fizesse quatro
+    perguntas e recebesse quatro respostas certas era transferido pro humano
+    na quarta. O docstring sempre disse "tentativas sem sucesso" — era a
+    implementacao que contava sucesso junto.
+    """
+
+    def test_quatro_respostas_certas_nao_escalam(self):
+        conversa = _conversa_com(respostas_uteis=4)
+
+        resultado = TriagemService(limite_tentativas=3).decidir(
+            conversa, _resposta("Mais uma resposta boa.")
+        )
+
+        assert resultado.decisao is Decisao.RESOLVER
+
+    def test_dez_respostas_certas_nao_escalam(self):
+        conversa = _conversa_com(respostas_uteis=10)
+
+        resultado = TriagemService(limite_tentativas=3).decidir(
+            conversa, _resposta("Ainda ajudando.")
+        )
+
+        assert resultado.decisao is Decisao.RESOLVER
+
+    def test_uma_resposta_util_zera_a_sequencia(self):
+        """Depois de ajudar, a IA ganha a contagem de volta do zero."""
+        conversa = _conversa_com(tentativas_da_ia=2)
+        conversa.registrar_mensagem(
+            Mensagem(Autor.CLIENTE, "e o horario?", datetime(2026, 9, 12, 11, 0))
+        )
+        conversa.registrar_mensagem(
+            Mensagem(Autor.IA, "Das 9h as 18h.", datetime(2026, 9, 12, 11, 1))
+        )
+
+        resultado = TriagemService(limite_tentativas=3).decidir(
+            conversa, _resposta("outra resposta")
+        )
+
+        assert resultado.decisao is Decisao.RESOLVER
 
 
 class TestEscaladoPorNumeroDeTentativas:

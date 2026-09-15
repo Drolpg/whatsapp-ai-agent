@@ -153,13 +153,17 @@ class TestQuandoOFluxoEscala:
 
         assert conversas.obter_ou_criar(SID).status is StatusConversa.ESCALADA
 
-    def test_base_vazia_escala_sem_chamar_o_llm(self):
-        cliente, _, llm, _, handoff, _ = _montar(trechos=[])
+    def test_base_vazia_orienta_sem_chamar_o_llm(self):
+        """Fora do dominio o agente se apresenta; escalar so se insistir."""
+        from core.triagem import MENSAGEM_FORA_DO_DOMINIO
+
+        cliente, _, llm, canal, handoff, _ = _montar(trechos=[])
 
         cliente.post(ROTA, data=_payload())
 
         assert llm.chamadas == 0
-        assert len(handoff.escalonamentos) == 1
+        assert canal.enviadas == [(SID, MENSAGEM_FORA_DO_DOMINIO)]
+        assert handoff.escalonamentos == []
 
 
 class TestOQueOWebhookIgnora:

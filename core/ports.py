@@ -101,6 +101,41 @@ class Canal(Protocol):
         ...
 
 
+class RepositorioConversas(Protocol):
+    """Onde o estado de uma `Conversa` sobrevive entre uma mensagem e outra.
+
+    Cada mensagem do cliente chega numa requisicao HTTP separada, entao o
+    agente precisa reencontrar a conversa de antes: o historico, o status, e
+    o motivo de um escalonamento. Guardar isso num dicionario de processo
+    parecia suficiente ate deixar de ser — reiniciar o servidor apagava tudo,
+    e com mais de um worker cada um teria a sua propria versao da mesma
+    conversa, fazendo o limite de tentativas contar errado.
+
+    Esta porta nao diz onde guardar. Uma implementacao pode usar memoria (bom
+    pra teste), outra pode devolver ao canal aquilo que ele ja sabe. O nucleo
+    so precisa de duas coisas: recuperar e salvar.
+    """
+
+    def obter_ou_criar(self, conversa_id: str) -> Conversa:
+        """Devolve a conversa de `conversa_id`, ou uma nova se nao existir.
+
+        A conversa volta como estava: mesmo historico, mesmo status. Uma que
+        havia sido escalada volta escalada — e por isso que a implementacao
+        reconstitui o estado em vez de reaplicar as transicoes.
+        """
+        ...
+
+    def salvar(self, conversa: Conversa) -> None:
+        """Guarda o estado atual, pra proxima mensagem encontrar.
+
+        Chamado depois de processar cada mensagem. O que precisa sobreviver e
+        o que nao da pra deduzir de novo: o status e o motivo do
+        escalonamento. O historico, dependendo de onde se guarda, o proprio
+        canal ja preserva.
+        """
+        ...
+
+
 class GatewayHandoff(Protocol):
     """Como uma conversa sai da IA e vai pra um atendente humano."""
 

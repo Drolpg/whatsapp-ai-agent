@@ -70,6 +70,8 @@ arquivo, é sinal de que algo vazou de infraestrutura pra cá.
 - **`BaseConhecimento`**: `buscar_trechos_relevantes(pergunta) -> list[str]`
 - **`Canal`**: `enviar_mensagem(conversa_id, texto)` / recebimento
 - **`GatewayHandoff`**: `escalar(conversa, resumo, atributos) -> None`
+- **`RepositorioConversas`**: `obter_ou_criar(conversa_id) -> Conversa` /
+  `salvar(conversa) -> None`
 
 Lista vazia é resposta válida de `BaseConhecimento`: significa que nada no
 acervo ajuda com aquela pergunta. É isso que permite a decisão de cobertura
@@ -82,6 +84,10 @@ núcleo trata `[]` como "escala sem nem chamar o LLM".
 - **`OllamaProvedorLLM`** (Fase 3): Llama local via Ollama.
 - **`FaissBaseConhecimento`** (Fase 4): LangChain + embeddings locais + FAISS.
 - **`TACCanal`** (Fase 5): SDK do Twilio Agent Connect.
+- **`TwilioRepositorioConversas`** (Fase 5): guarda status e motivo nos
+  `attributes` da Conversation; o histórico já são as mensagens dela.
+- **`ConversasEmMemoria`** (Fase 5): segunda implementação da mesma porta,
+  para teste e execução local.
 - **`StudioGatewayHandoff`** (Fase 6): dispara o Studio Flow de handoff.
 - **`AnthropicProvedorLLM`** / **`OpenAIProvedorLLM`** (Fase 7): segunda
   implementação de `ProvedorLLM`, só pra provar a troca.
@@ -104,6 +110,8 @@ whatsapp-ai-agent/
       faiss_repository.py
     channel/
       tac_channel.py
+      twilio_repositorio.py
+      webhook.py
     handoff/
       studio_gateway.py
   tests/

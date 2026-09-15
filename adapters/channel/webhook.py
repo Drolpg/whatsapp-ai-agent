@@ -15,32 +15,19 @@ precisamos (form-encoded, que e o formato que o Twilio manda, e um cliente
 de teste embutido) sem trazer Pydantic nem ASGI junto. Se um dia o
 `ProvedorLLM` virar streaming, vale reabrir a conversa.
 
-LIMITACAO CONHECIDA: A PRIMEIRA MENSAGEM DE UM CLIENTE NOVO
-`onMessageAdded` nao dispara durante a autocreation — quando o Twilio cria a
-Conversation por causa de uma mensagem que chegou, o evento da propria
-mensagem que a criou nao e enviado. Com um numero WhatsApp proprio (que usa
-autocreation), a primeira pergunta de um cliente novo cria a conversa e
-*nao* chega aqui: o cliente so seria atendido a partir da segunda mensagem.
+SOBRE A PRIMEIRA MENSAGEM DE UM CLIENTE NOVO
+Ela chega aqui normalmente. Chegamos a documentar o contrario, por confundir
+dois nomes parecidos: o que *nao* dispara durante a autocreation e
+`onMessageAdd` (pre-acao, sem o "ed"), nao o `onMessageAdded` que este
+webhook assina. Ver
+https://www.twilio.com/docs/conversations/inbound-autocreation
 
-Na prova da Fase 5 isso nao apareceu porque a Conversation foi criada a mao,
-que e o caminho obrigatorio com o Sandbox. Tratar esse caso provavelmente
-significa assinar tambem `onConversationAdded` e ler a primeira mensagem
-pela API — ainda nao feito.
-Ver https://www.twilio.com/docs/conversations/inbound-autocreation
-
-LIMITACAO CONHECIDA: ESTADO EM MEMORIA
-As `Conversa` vivem num dicionario no processo (`ConversasEmMemoria`). Isso
-e deliberado pra POC e tem consequencias reais:
-
-- reiniciar o processo apaga todas as conversas em andamento;
-- com mais de um worker (gunicorn -w 2, varias instancias), cada um teria
-  sua propria copia, e a mesma conversa alternaria entre historicos
-  diferentes — o limite de tentativas da triagem pararia de funcionar;
-- nao ha expiracao: o dicionario so cresce.
-
-Nao formalizamos isso como porta (um `RepositorioConversas`) porque seria
-decidir sozinho uma mudanca de arquitetura que o resto do projeto herdaria.
-Quando persistencia entrar de fato no escopo, e essa a discussao a ter.
+ONDE VIVE O ESTADO
+Numa implementacao de `RepositorioConversas`, injetada. `ConversasEmMemoria`
+serve testes e execucao local; em producao o `main.py` injeta a versao que
+guarda tudo na propria Conversation do Twilio, e ai o agente nao tem estado
+proprio nenhum — reiniciar nao apaga conversa, e varios workers leem a mesma
+verdade.
 """
 
 from datetime import datetime, timezone
@@ -56,11 +43,16 @@ EVENTO_MENSAGEM_ADICIONADA = "onMessageAdded"
 
 
 class ConversasEmMemoria:
-    """Guarda as `Conversa` vivas por id, so enquanto o processo existir.
+    """Implementacao de `RepositorioConversas` que vive no processo.
 
-    Ver a limitacao documentada no topo do modulo. A interface e mantida
-    minima de proposito: `obter_ou_criar` e a unica coisa que o webhook
-    precisa, e quanto menor a superficie, mais facil de trocar depois.
+    Boa pra teste e pra rodar local sem Twilio. Nao serve pra producao:
+    reiniciar apaga tudo, e com mais de um worker cada um teria a sua propria
+    versao da mesma conversa. Pra isso existe a implementacao que guarda o
+    estado no proprio Twilio.
+
+    `salvar` nao faz nada porque nao precisa: os objetos sao os mesmos, entao
+    o que o fluxo mudou ja esta refletido. Ela existe pra cumprir a porta —
+    e pra que trocar de implementacao nao mude o codigo de quem chama.
     """
 
     def __init__(self) -> None:
@@ -70,6 +62,9 @@ class ConversasEmMemoria:
         if conversa_id not in self._por_id:
             self._por_id[conversa_id] = Conversa(conversa_id=conversa_id)
         return self._por_id[conversa_id]
+
+    def salvar(self, conversa: Conversa) -> None:
+        self._por_id[conversa.conversa_id] = conversa
 
     def __len__(self) -> int:
         return len(self._por_id)
@@ -83,7 +78,7 @@ def criar_app(
     auth_token: str,
     autor_agente: str,
     triagem: TriagemService | None = None,
-    conversas: ConversasEmMemoria | None = None,
+    conversas=None,
     validar_assinatura: bool = True,
 ) -> Flask:
     """Monta o app Flask com as portas ja resolvidas.
@@ -91,6 +86,9 @@ def criar_app(
     Recebe tudo pronto, como os adapters: quem escolhe as implementacoes
     concretas e le o ambiente e o `main.py`. E o que permite um teste montar
     o app com portas falsas e sem tocar no Twilio.
+
+    `conversas` e a implementacao de `RepositorioConversas`. Omitida, cai na
+    de memoria, util pra teste e pra rodar local.
 
     `validar_assinatura=False` existe pro cliente de teste, que nao tem como
     assinar a requisicao. Em producao fica sempre ligado — o `main.py` nunca
@@ -149,6 +147,7 @@ def criar_app(
             canal=canal,
             gateway_handoff=gateway_handoff,
         )
+        conversas.salvar(conversa)
         app.logger.info(
             "decisao=%s motivo=%s", resultado.decisao.value, resultado.motivo or "-"
         )

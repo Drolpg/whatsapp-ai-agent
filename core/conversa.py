@@ -73,6 +73,33 @@ class Conversa:
     status: StatusConversa = StatusConversa.ATIVA
     motivo_escalonamento: str | None = None
 
+    @classmethod
+    def reconstituir(
+        cls,
+        conversa_id: str,
+        mensagens: "list[Mensagem] | tuple[Mensagem, ...]" = (),
+        status: StatusConversa = StatusConversa.ATIVA,
+        motivo_escalonamento: str | None = None,
+    ) -> "Conversa":
+        """Remonta uma conversa que ja existia, a partir de onde foi guardada.
+
+        Serve a um `RepositorioConversas`, e so a ele: ao reconstituir, o
+        estado *ja aconteceu*, entao nao se passa pelas regras de transicao —
+        uma conversa ESCALADA volta ESCALADA, sem precisar chamar `escalar`
+        de novo (o que, alias, seria recusado).
+
+        Nao use isto em regra de negocio. Pra mudar o estado de uma conversa,
+        os caminhos continuam sendo `registrar_mensagem`, `escalar` e
+        `encerrar` — quem chama este metodo esta lendo do passado, nao
+        decidindo nada.
+        """
+        return cls(
+            conversa_id=conversa_id,
+            _mensagens=list(mensagens),
+            status=status,
+            motivo_escalonamento=motivo_escalonamento,
+        )
+
     @property
     def mensagens(self) -> tuple[Mensagem, ...]:
         """As mensagens da conversa, na ordem em que chegaram."""

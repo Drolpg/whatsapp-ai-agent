@@ -130,8 +130,8 @@ produção. Se as requisições estiverem voltando `403`, quase sempre é a URL
 que o Flask enxerga diferindo da que o Twilio chamou — confira se o túnel
 está repassando os cabeçalhos `X-Forwarded-Proto` e `X-Forwarded-Host`.
 
-> **Limitação conhecida:** as conversas ficam num dicionário em memória.
-> Reiniciar o processo apaga as conversas em andamento, e rodar com mais de
-> um worker faria a mesma conversa alternar entre históricos diferentes.
-> É deliberado para a POC — ver o docstring de
-> `adapters/channel/webhook.py`.
+O estado das conversas fica no próprio Twilio: o histórico são as mensagens
+da Conversation, e o status vai nos `attributes` dela. O agente não guarda
+estado próprio, então reiniciar o servidor não apaga conversa em andamento e
+mais de um worker lê a mesma verdade. Ver
+`adapters/channel/twilio_repositorio.py`.

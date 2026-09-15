@@ -31,6 +31,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from adapters.channel.tac_channel import AUTOR_AGENTE_PADRAO, TACCanal
+from adapters.channel.twilio_repositorio import TwilioRepositorioConversas
 from adapters.channel.webhook import criar_app
 from adapters.knowledge.faiss_repository import FaissBaseConhecimento
 from adapters.llm.ollama_provider import OllamaProvedorLLM
@@ -74,6 +75,8 @@ def montar_app():
     base_url_ollama = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     autor_agente = os.environ.get("TWILIO_AUTOR_AGENTE", AUTOR_AGENTE_PADRAO)
     auth_token = _obrigatoria("TWILIO_AUTH_TOKEN")
+    account_sid = _obrigatoria("TWILIO_ACCOUNT_SID")
+    servico_conversas = os.environ.get("TWILIO_CONVERSATION_CONFIGURATION_ID")
 
     if not CAMINHO_INDICE.is_dir():
         raise SystemExit(
@@ -99,15 +102,22 @@ def montar_app():
             timeout_segundos=float(os.environ.get("OLLAMA_TIMEOUT_SEGUNDOS", "120")),
         ),
         canal=TACCanal(
-            account_sid=_obrigatoria("TWILIO_ACCOUNT_SID"),
+            account_sid=account_sid,
             auth_token=auth_token,
             autor_agente=autor_agente,
             # Sem isto, o envio vai pro Conversation Service padrao e o
             # Twilio devolve 404 pra conversas que vivem em outro service —
             # ver o docstring de TACCanal._conversa.
-            conversation_service_sid=os.environ.get(
-                "TWILIO_CONVERSATION_CONFIGURATION_ID"
-            ),
+            conversation_service_sid=servico_conversas,
+        ),
+        # O estado das conversas mora no proprio Twilio, e nao num dicionario
+        # do processo: reiniciar o servidor nao apaga conversa nenhuma, e
+        # varios workers leem a mesma verdade.
+        conversas=TwilioRepositorioConversas(
+            account_sid=account_sid,
+            auth_token=auth_token,
+            conversation_service_sid=servico_conversas,
+            autor_agente=autor_agente,
         ),
         gateway_handoff=HandoffAindaNaoImplementado(),
         auth_token=auth_token,

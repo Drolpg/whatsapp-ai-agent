@@ -10,7 +10,12 @@ from datetime import datetime
 
 from core.conversa import Autor, Conversa, Mensagem, StatusConversa
 from core.ports import RespostaLLM
-from core.triagem import Decisao, TriagemService, processar_mensagem_recebida
+from core.triagem import (
+    MENSAGEM_DE_ESCALONAMENTO,
+    Decisao,
+    TriagemService,
+    processar_mensagem_recebida,
+)
 
 AGORA = datetime(2026, 9, 13, 14, 30)
 
@@ -202,12 +207,14 @@ class TestQuandoAIAPedeParaEscalar:
         assert conversa_escalada is conversa
         assert conversa_escalada.status is StatusConversa.ESCALADA
 
-    def test_o_cliente_nao_recebe_nada_pelo_canal(self):
+    def test_o_cliente_recebe_o_aviso_e_nao_a_candidata(self):
+        """O texto da IA continua descartado — so o aviso fixo vai."""
         _, _, _, canal, _ = _processar(
             Conversa(conversa_id="c1"), "nao sei responder", deve_escalar=True
         )
 
-        assert canal.enviadas == []
+        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
+        assert all("nao sei responder" not in t for _, t in canal.enviadas)
 
     def test_a_conversa_fica_escalada(self):
         conversa = Conversa(conversa_id="c1")
@@ -235,8 +242,67 @@ class TestQuandoAIAPedeParaEscalar:
             conversa, "Das 9h as 18h.", deve_escalar=True
         )
 
-        assert canal.enviadas == []
+        assert all("Das 9h as 18h." not in t for _, t in canal.enviadas)
         assert len(handoff.escalonamentos) == 1
+
+
+class TestOClienteEAvisadoAoEscalar:
+    """Escalar sem avisar deixa o cliente no vacuo.
+
+    Foi o que aconteceu na prova da Fase 5: a mensagem escalou, o handoff
+    entrou no log, e do lado do cliente nao chegou absolutamente nada. Ele
+    nao tem como saber se a mensagem sequer foi recebida. Enquanto a Fase 6
+    nao existe isso e total; mesmo com o Flex pronto, deixar o cliente sem
+    retorno enquanto a fila anda nao e aceitavel em atendimento.
+    """
+
+    def test_avisa_quando_a_ia_pede_para_escalar(self):
+        _, _, _, canal, _ = _processar(
+            Conversa(conversa_id="c1"), "nao sei", deve_escalar=True
+        )
+
+        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
+
+    def test_avisa_quando_a_base_nao_cobre(self):
+        _, _, _, canal, _ = _processar(
+            Conversa(conversa_id="c1"), "irrelevante", trechos=[]
+        )
+
+        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
+
+    def test_avisa_quando_estoura_o_limite_de_tentativas(self):
+        conversa = _conversa_com_respostas_da_ia(3)
+
+        _, _, _, canal, _ = _processar(conversa, "mais uma tentativa", limite=3)
+
+        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
+
+    def test_o_aviso_sai_antes_do_handoff(self):
+        """Se o gateway falhar, o cliente ja foi avisado."""
+        conversa = Conversa(conversa_id="c1")
+
+        _, _, _, canal, handoff = _processar(conversa, "x", deve_escalar=True)
+
+        assert canal.enviadas and handoff.escalonamentos
+
+    def test_o_aviso_nao_conta_como_tentativa_da_ia(self):
+        """Ele nao entra no historico: nao e uma tentativa de resposta."""
+        conversa = Conversa(conversa_id="c1")
+
+        _processar(conversa, "x", deve_escalar=True, texto_cliente="pergunta")
+
+        assert conversa.mensagens == (
+            Mensagem(Autor.CLIENTE, "pergunta", AGORA),
+        )
+
+    def test_conversa_ja_escalada_nao_avisa_de_novo(self):
+        """Repetir o aviso a cada mensagem viraria spam."""
+        conversa = Conversa(conversa_id="c1")
+        conversa.escalar(motivo="ja foi")
+
+        _, _, _, canal, _ = _processar(conversa, "x")
+
+        assert canal.enviadas == []
 
 
 class TestQuandoABaseNaoTemNadaRelevante:
@@ -278,12 +344,12 @@ class TestQuandoABaseNaoTemNadaRelevante:
 
         assert conversa.status is StatusConversa.ESCALADA
 
-    def test_o_cliente_nao_recebe_nada_pelo_canal(self):
+    def test_o_cliente_recebe_o_aviso_de_transferencia(self):
         _, _, _, canal, _ = _processar(
             Conversa(conversa_id="c1"), "irrelevante", trechos=[]
         )
 
-        assert canal.enviadas == []
+        assert canal.enviadas == [("c1", MENSAGEM_DE_ESCALONAMENTO)]
 
     def test_a_pergunta_do_cliente_continua_no_historico(self):
         conversa = Conversa(conversa_id="c1")
@@ -302,7 +368,7 @@ class TestQuandoABaseNaoTemNadaRelevante:
 
         assert resultado.decisao is Decisao.ESCALAR
         assert llm.mensagens_recebidas == []
-        assert canal.enviadas == []
+        assert all("Sei a resposta!" not in t for _, t in canal.enviadas)
 
 
 class TestQuandoAConversaJaSaiuDasMaosDaIA:
@@ -401,4 +467,4 @@ class TestQuandoEstouraOLimiteDeTentativas:
 
         _, _, _, canal, _ = _processar(conversa, "Tente reiniciar o app.", limite=3)
 
-        assert canal.enviadas == []
+        assert all("Tente reiniciar" not in t for _, t in canal.enviadas)

@@ -6,9 +6,11 @@ A loja atende de segunda a sexta-feira, das 9h às 18h.
 Aos sábados, o horário é das 9h às 13h.
 Aos domingos e feriados nacionais a loja não abre.
 
-## Endereço
+## Endereço e localização
 
-Avenida Paulista, 1000 — Bela Vista, São Paulo (SP), CEP 01310-100.
+O endereço da loja é Avenida Paulista, 1000 — Bela Vista, São Paulo (SP),
+CEP 01310-100. A loja fica nesse endereço, e é a nossa única loja física.
+
 A entrada fica ao lado da estação Trianon-Masp do metrô.
 
 ## Contato

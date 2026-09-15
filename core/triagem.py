@@ -71,6 +71,20 @@ de produto que ninguem tomou ainda; por ora a mensagem e ignorada sem
 quebrar o processo.
 """
 
+MENSAGEM_DE_ESCALONAMENTO = (
+    "Vou transferir voce para um atendente humano. Um momento, por favor."
+)
+"""O que o cliente recebe quando a conversa escala.
+
+Escalar sem avisar deixa o cliente no vacuo — ele nao sabe nem se a mensagem
+chegou. Na prova da Fase 5 isso aconteceu de verdade: a mensagem escalou, o
+handoff foi pro log, e do lado do WhatsApp nao chegou nada.
+
+Repare no que este aviso NAO e: ele nao e a resposta candidata da IA. Aquela
+continua descartada, porque foi gerada sem a informacao necessaria. Este e
+um texto fixo, escrito por nos, que nao tem como alucinar.
+"""
+
 LIMITE_TENTATIVAS_PADRAO = 3
 """Quantas respostas da IA sem resolver antes de chamar um humano.
 
@@ -213,10 +227,10 @@ def processar_mensagem_recebida(
     trechos = base_conhecimento.buscar_trechos_relevantes(texto_cliente)
 
     if not trechos:
-        resultado = ResultadoTriagem.escalar(MOTIVO_SEM_CONTEXTO)
-        conversa.escalar(resultado.motivo)
-        gateway_handoff.escalar(conversa, resumo=resultado.motivo, atributos={})
-        return resultado
+        return _escalar(
+            conversa, ResultadoTriagem.escalar(MOTIVO_SEM_CONTEXTO), canal,
+            gateway_handoff,
+        )
 
     resposta_llm = provedor_llm.gerar_resposta(conversa.mensagens, trechos)
 
@@ -226,7 +240,27 @@ def processar_mensagem_recebida(
         conversa.registrar_mensagem(Mensagem(Autor.IA, resposta_llm.texto, timestamp))
         canal.enviar_mensagem(conversa.conversa_id, resultado.resposta)
     else:
-        conversa.escalar(resultado.motivo)
-        gateway_handoff.escalar(conversa, resumo=resultado.motivo, atributos={})
+        _escalar(conversa, resultado, canal, gateway_handoff)
 
+    return resultado
+
+
+def _escalar(
+    conversa: Conversa,
+    resultado: ResultadoTriagem,
+    canal: Canal,
+    gateway_handoff: GatewayHandoff,
+) -> ResultadoTriagem:
+    """Avisa o cliente, marca a conversa e aciona o handoff — nessa ordem.
+
+    O aviso vem primeiro de proposito: se o gateway falhar, o cliente pelo
+    menos ja sabe que alguem vai assumir. O contrario deixaria de novo o
+    silencio que a prova da Fase 5 expos.
+
+    O aviso nao entra no historico da conversa: ele nao e uma tentativa de
+    resposta da IA, e conta-lo como tal estragaria o limite de tentativas.
+    """
+    canal.enviar_mensagem(conversa.conversa_id, MENSAGEM_DE_ESCALONAMENTO)
+    conversa.escalar(resultado.motivo)
+    gateway_handoff.escalar(conversa, resumo=resultado.motivo, atributos={})
     return resultado

@@ -135,12 +135,15 @@ class TestMensagemDoCliente:
 
 
 class TestQuandoOFluxoEscala:
-    def test_aciona_o_handoff_e_nao_responde_ao_cliente(self):
+    def test_aciona_o_handoff_e_avisa_o_cliente(self):
+        """O cliente recebe o aviso de transferencia, nao a resposta da IA."""
+        from core.triagem import MENSAGEM_DE_ESCALONAMENTO
+
         cliente, _, _, canal, handoff, _ = _montar(deve_escalar=True)
 
         cliente.post(ROTA, data=_payload())
 
-        assert canal.enviadas == []
+        assert canal.enviadas == [(SID, MENSAGEM_DE_ESCALONAMENTO)]
         assert [sid for sid, _, _ in handoff.escalonamentos] == [SID]
 
     def test_a_conversa_fica_escalada(self):

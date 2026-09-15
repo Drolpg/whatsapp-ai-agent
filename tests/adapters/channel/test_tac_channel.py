@@ -67,9 +67,14 @@ class TestEnviarMensagem:
         canal.enviar_mensagem(credenciais["conversa_id"], marca)
 
         cliente = Client(credenciais["account_sid"], credenciais["auth_token"])
+        # `order="desc"` nao e detalhe: o padrao e ascendente, entao um
+        # `limit` pequeno devolve as mensagens mais ANTIGAS. Este teste
+        # passou por um tempo e comecou a falhar sozinho quando a conversa
+        # descartavel ultrapassou o limite — a mensagem recem-postada ficava
+        # fora da janela.
         mensagens = (
             cliente.conversations.v1.conversations(credenciais["conversa_id"])
-            .messages.list(limit=20)
+            .messages.list(order="desc", limit=10)
         )
 
         correspondente = [m for m in mensagens if m.body == marca]

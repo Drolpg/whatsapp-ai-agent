@@ -39,6 +39,7 @@ PASTA_DOCUMENTOS = Path(__file__).resolve().parents[3] / "data" / "documentos"
 # que a versao anterior destes testes nao viu.
 PERGUNTAS_COBERTAS = [
     ("qual o horario de atendimento?", "segunda a sexta"),
+    ("onde fica a loja?", "Paulista"),
     ("a loja abre no domingo?", "domingo"),
     ("ate que horas voces ficam abertos na sexta?", "18h"),
     ("qual o endereco de voces?", "Paulista"),
@@ -56,17 +57,15 @@ PERGUNTAS_FORA_DO_ACERVO = [
     "qual a garantia dos produtos?",
     "como faco pra trocar um produto com defeito?",
     "qual o CNPJ da empresa?",
-    "voces tem loja em Curitiba?",
     "qual a capital da Mongolia?",
 ]
 
 COBERTAS_QUE_O_LIMIAR_BARRA = [
-    # O acervo responde as duas, mas elas ficam acima de 0.65 e escalam pro
-    # humano a toa. E o preco escolhido: afrouxar pra pegar estas deixaria
-    # passar "voces tem loja em Curitiba?" e "qual o CNPJ da empresa?", que
-    # o acervo nao responde. Ver DISTANCIA_MAXIMA_PADRAO.
+    # O acervo responde, mas fica acima de 0.65 e escala pro humano a toa.
+    # "onde fica a loja?" saiu desta lista quando o texto do documento passou
+    # a dizer "a loja fica em..." — a redacao do acervo move a distancia
+    # tanto quanto o limiar, e costuma ser o ajuste mais barato.
     "voces abrem no sabado?",
-    "onde fica a loja?",
 ]
 
 COBERTAS_COM_RECUPERACAO_ERRADA = [
@@ -139,7 +138,7 @@ class TestTrechosDeMarkdown:
         trechos = trechos_de_markdown(PASTA_DOCUMENTOS)
 
         assert any(t.startswith("Horário de funcionamento.") for t in trechos)
-        assert any(t.startswith("Endereço.") for t in trechos)
+        assert any(t.startswith("Endereço e localização.") for t in trechos)
 
     def test_nenhum_trecho_e_so_um_titulo_de_markdown(self):
         trechos = trechos_de_markdown(PASTA_DOCUMENTOS)

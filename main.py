@@ -92,11 +92,22 @@ def montar_app():
         provedor_llm=OllamaProvedorLLM(
             base_url=base_url_ollama,
             model=_obrigatoria("OLLAMA_MODEL"),
+            # Explicito, e generoso: um modelo local frio leva dezenas de
+            # segundos na primeira chamada. Estourar o timeout aqui vira
+            # escalonamento silencioso — o cliente e mandado pro humano por
+            # lentidao da maquina, nao por limitacao do modelo.
+            timeout_segundos=float(os.environ.get("OLLAMA_TIMEOUT_SEGUNDOS", "120")),
         ),
         canal=TACCanal(
             account_sid=_obrigatoria("TWILIO_ACCOUNT_SID"),
             auth_token=auth_token,
             autor_agente=autor_agente,
+            # Sem isto, o envio vai pro Conversation Service padrao e o
+            # Twilio devolve 404 pra conversas que vivem em outro service —
+            # ver o docstring de TACCanal._conversa.
+            conversation_service_sid=os.environ.get(
+                "TWILIO_CONVERSATION_CONFIGURATION_ID"
+            ),
         ),
         gateway_handoff=HandoffAindaNaoImplementado(),
         auth_token=auth_token,
@@ -105,7 +116,17 @@ def montar_app():
 
 
 def main() -> None:
+    import logging
+
+    # O logger do Flask so aparece a partir de INFO; sem isto, todas as
+    # linhas de diagnostico do webhook (o que foi ignorado e por que) somem,
+    # e um 204 silencioso vira um mistero — foi o que aconteceu na Fase 5.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
+
     app = montar_app()
+    app.logger.setLevel(logging.INFO)
 
     # O Twilio chama o webhook por https (via tunel ou load balancer), mas o
     # Flask ve http internamente. A validacao de assinatura exige a URL exata

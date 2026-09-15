@@ -61,9 +61,11 @@ class TACCanal:
         account_sid: str,
         auth_token: str,
         autor_agente: str = AUTOR_AGENTE_PADRAO,
+        conversation_service_sid: str | None = None,
     ) -> None:
         self.account_sid = account_sid
         self.autor_agente = autor_agente
+        self.conversation_service_sid = conversation_service_sid
         self._cliente = Client(account_sid, auth_token)
 
     def enviar_mensagem(self, conversa_id: str, texto: str) -> None:
@@ -77,7 +79,28 @@ class TACCanal:
         Engolir a excecao aqui so transformaria "a mensagem nao chegou" em
         "a mensagem nao chegou e ninguem ficou sabendo".
         """
-        self._cliente.conversations.v1.conversations(conversa_id).messages.create(
+        self._conversa(conversa_id).messages.create(
             author=self.autor_agente,
             body=texto[:LIMITE_CARACTERES_TWILIO],
         )
+
+    def _conversa(self, conversa_id: str):
+        """Resolve a conversa no service certo.
+
+        Este detalhe custou caro pra descobrir. `conversations.v1.conversations(sid)`
+        procura a conversa no Conversation Service *padrao* da conta. Uma
+        conversa criada dentro de outro service — o do POC, por exemplo — nao
+        existe nesse caminho, e o Twilio devolve 404 (erro 20404).
+
+        O sintoma era enganoso: a IA respondia certo, mas a resposta nunca
+        chegava ao cliente, e o webhook estourava 500 no fim do processamento.
+        Os testes de integracao nao pegaram porque a conversa de teste tinha
+        sido criada no service padrao, onde o caminho curto funciona.
+
+        Com `conversation_service_sid` definido, usamos o caminho com escopo
+        de service, que e o correto em qualquer um dos dois casos.
+        """
+        v1 = self._cliente.conversations.v1
+        if self.conversation_service_sid:
+            return v1.services(self.conversation_service_sid).conversations(conversa_id)
+        return v1.conversations(conversa_id)

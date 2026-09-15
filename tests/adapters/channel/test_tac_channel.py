@@ -81,6 +81,68 @@ class TestEnviarMensagem:
         canal.enviar_mensagem(credenciais["conversa_id"], "a" * (LIMITE_CARACTERES_TWILIO + 500))
 
 
+class TestConversaDentroDeUmService:
+    """O caso que o teste anterior nao cobria — e que quebrou em producao.
+
+    A conversa de teste original vivia no Conversation Service *padrao*, onde
+    `conversations.v1.conversations(sid)` funciona. Em producao a conversa
+    nasce dentro do service do POC, e naquele caminho ela simplesmente nao
+    existe: o Twilio devolve 404. O sintoma era a IA responder certo e a
+    resposta nunca chegar ao cliente.
+    """
+
+    @pytest.fixture
+    def servico_e_conversa(self, credenciais):
+        from twilio.rest import Client
+
+        cliente = Client(credenciais["account_sid"], credenciais["auth_token"])
+        servico = cliente.conversations.v1.services.create(
+            friendly_name=f"teste-tac-{uuid.uuid4().hex[:8]}"
+        )
+        conversa = cliente.conversations.v1.services(servico.sid).conversations.create(
+            friendly_name="teste-envio"
+        )
+        yield servico.sid, conversa.sid, cliente
+        cliente.conversations.v1.services(servico.sid).delete()
+
+    def test_entrega_em_conversa_de_service_proprio(
+        self, credenciais, servico_e_conversa
+    ):
+        servico_sid, conversa_sid, cliente = servico_e_conversa
+        canal = TACCanal(
+            account_sid=credenciais["account_sid"],
+            auth_token=credenciais["auth_token"],
+            conversation_service_sid=servico_sid,
+        )
+        marca = f"teste {uuid.uuid4().hex[:8]}"
+
+        canal.enviar_mensagem(conversa_sid, marca)
+
+        mensagens = (
+            cliente.conversations.v1.services(servico_sid)
+            .conversations(conversa_sid)
+            .messages.list(limit=10)
+        )
+        assert any(m.body == marca for m in mensagens), (
+            "a mensagem nao chegou na conversa do service"
+        )
+
+    def test_sem_o_service_sid_o_envio_falha(self, credenciais, servico_e_conversa):
+        """Trava a causa do bug: sem o service, o Twilio nao acha a conversa."""
+        from twilio.base.exceptions import TwilioRestException
+
+        servico_sid, conversa_sid, _ = servico_e_conversa
+        canal_sem_servico = TACCanal(
+            account_sid=credenciais["account_sid"],
+            auth_token=credenciais["auth_token"],
+        )
+
+        with pytest.raises(TwilioRestException) as erro:
+            canal_sem_servico.enviar_mensagem(conversa_sid, "nao deve chegar")
+
+        assert erro.value.status == 404
+
+
 class TestConfiguracao:
     """Estes nao precisam de rede: so conferem o contrato do construtor."""
 

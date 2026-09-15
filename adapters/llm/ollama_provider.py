@@ -13,12 +13,15 @@ O que este modulo importa de `core/` sao so tipos de dado.
 """
 
 import json
+import logging
 from collections.abc import Sequence
 
 import requests
 
 from core.conversa import Autor, Mensagem
 from core.ports import RespostaLLM
+
+logger = logging.getLogger(__name__)
 
 PAPEL_DO_AGENTE = """Voce e um assistente de atendimento ao cliente que responde pelo WhatsApp.
 
@@ -153,4 +156,14 @@ class OllamaProvedorLLM:
         ]
 
     def _escalar_por_falha(self, motivo: str) -> RespostaLLM:
+        """Transforma uma falha tecnica em pedido de escalonamento — e avisa.
+
+        O log aqui nao e decoracao. Do lado de fora, uma falha de
+        infraestrutura e uma recusa do modelo ficam identicas: as duas viram
+        `deve_escalar=True`, e a triagem reporta as duas como "a IA sinalizou
+        que nao sabe resolver". Sem esta linha, um Ollama fora do ar ou um
+        timeout parecem limitacao do modelo, e a investigacao vai pro lado
+        errado — foi exatamente o que aconteceu na prova da Fase 5.
+        """
+        logger.warning("escalando por falha tecnica: %s", motivo)
         return RespostaLLM(texto=motivo, deve_escalar=True)

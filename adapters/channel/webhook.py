@@ -107,24 +107,40 @@ def criar_app(
     @app.post("/webhooks/twilio/mensagem")
     def receber_mensagem() -> Response:
         if validar_assinatura and not _assinatura_confere(validador):
+            app.logger.warning("recusado: assinatura invalida")
             return Response("assinatura invalida", status=403)
 
-        if request.form.get("EventType") != EVENTO_MENSAGEM_ADICIONADA:
+        evento = request.form.get("EventType")
+        if evento != EVENTO_MENSAGEM_ADICIONADA:
+            app.logger.info("ignorado: EventType=%s", evento)
             return Response("", status=204)
 
         autor = request.form.get("Author", "")
         if autor == autor_agente:
             # O Twilio dispara onMessageAdded tambem quando *nos* postamos.
             # Sem este filtro o agente responderia a propria resposta, em laco.
+            app.logger.info("ignorado: mensagem do proprio agente")
             return Response("", status=204)
 
         conversa_id = request.form.get("ConversationSid", "")
         texto = request.form.get("Body", "")
         if not conversa_id or not texto.strip():
+            app.logger.info(
+                "ignorado: sem conversa ou sem texto (campos recebidos: %s)",
+                sorted(request.form.keys()),
+            )
             return Response("", status=204)
 
-        processar_mensagem_recebida(
-            conversa=conversas.obter_ou_criar(conversa_id),
+        conversa = conversas.obter_ou_criar(conversa_id)
+        app.logger.info(
+            "processando conversa=%s status=%s autor=%s texto=%r",
+            conversa_id,
+            conversa.status.value,
+            autor,
+            texto[:60],
+        )
+        resultado = processar_mensagem_recebida(
+            conversa=conversa,
             texto_cliente=texto,
             timestamp=_agora(request.form.get("DateCreated")),
             base_conhecimento=base_conhecimento,
@@ -132,6 +148,9 @@ def criar_app(
             triagem=triagem,
             canal=canal,
             gateway_handoff=gateway_handoff,
+        )
+        app.logger.info(
+            "decisao=%s motivo=%s", resultado.decisao.value, resultado.motivo or "-"
         )
         return Response("", status=204)
 

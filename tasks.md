@@ -5,11 +5,15 @@
 > arquivo). Dividido em 2026-09-13 a partir do `SPEC.md` único original —
 > nada do conteúdo foi perdido, só redistribuído.
 >
-> Status em 2026-09-13: Fases 0, 1, 2, 3 e 3.1 implementadas e mescladas na
-> `dev`. O modelo local validado é o `llama3.2:3b`. A Fase 3.1 resolveu a
-> corrupção do sinal de escalonamento, mas deixou em aberto a discriminação
-> de cobertura (12/20 no benchmark) — problema que a Fase 4 ataca movendo
-> essa decisão pra recuperação. Próxima fase: 4.
+> Status em 2026-09-15: Fases 0 a 5 implementadas e mescladas na `dev`, com
+> uma mensagem real indo e voltando pelo WhatsApp. A `main` segue no commit
+> inicial, por decisão — ela só recebe merge quando houver um estado que
+> valha mostrar ao cliente. Próxima fase: 6.
+>
+> Duas ressalvas conhecidas, nenhuma bloqueante: o handoff ainda só escreve
+> no log (é a Fase 6), e o `llama3.2:3b` inventa detalhes em cerca de 1/3
+> das respostas mesmo com o trecho certo em mãos — limite de capacidade do
+> modelo, que a Fase 7 existe para trocar.
 
 ## Fases (cada uma com objetivo de aprendizado + critério de aceite)
 
@@ -98,8 +102,38 @@ Critério de aceite:
 ### Fase 5 — Canal real (WhatsApp via TAC)
 Aprendizado: como conectar a um sistema externo real sem que ele vaze pro
 núcleo de decisão.
-Critério de aceite: `TACCanal` funcionando, primeira mensagem real indo e
-voltando pelo WhatsApp (Sandbox ou número real).
+Critério de aceite (cumprido): `TACCanal` funcionando, primeira mensagem
+real indo e voltando pelo WhatsApp (Sandbox, com a Conversation e o
+participante criados à mão — o Sandbox não suporta autocreation).
+
+O que a fase entregou além do previsto, quase tudo descoberto porque houve
+teste com tráfego real:
+
+- `webhook.py`, a entrada do canal. Não é porta nova: a porta `Canal` cobre
+  só a saída, de propósito.
+- `RepositorioConversas`, com duas implementações. O estado das conversas
+  vivia num dicionário do processo, e isso não sobrevivia a um restart nem
+  a um segundo worker. Agora mora no próprio Twilio — histórico nas
+  mensagens da Conversation, status nos `attributes` dela.
+- Guarda de conversa escalada. Depois do handoff a IA continuava
+  respondendo por cima do atendente, e uma segunda decisão de escalar
+  estourava HTTP 500 — que o Twilio reenvia, virando erro em laço.
+- Aviso ao cliente antes de escalar. Escalar em silêncio deixava a pessoa
+  sem saber se a mensagem sequer chegou.
+- Direcionamento por domínio. Recuperação vazia escalava na hora, então
+  qualquer "oi" ia para a fila humana; agora o agente diz o que sabe tratar
+  e dá a chance de reformular.
+- Correção do contador de tentativas, que somava todas as respostas da IA:
+  um cliente satisfeito com quatro perguntas era transferido na quarta.
+
+Três armadilhas do Twilio que custaram tempo e ficam registradas:
+
+- envio por `conversations.v1.conversations(sid)` resolve no Conversation
+  Service **padrão**; conversa de outro service devolve 404;
+- mensagem criada pela API só dispara webhook com o cabeçalho
+  `X-Twilio-Webhook-Enabled: true`;
+- o que **não** dispara na autocreation é `onMessageAdd` (pré-ação), e não o
+  `onMessageAdded` que o webhook assina — os nomes enganam.
 
 ### Fase 6 — Handoff ponta a ponta
 Aprendizado: como o `GatewayHandoff` é o único lugar que sabe que "escalar"
